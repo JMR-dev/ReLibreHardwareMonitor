@@ -20,6 +20,9 @@ public sealed class HardwareMonitorService : IDisposable
     private const string DeferNetworkDetectionSetting = "network.deferDetection";
     private const string DeferNvidiaDetectionSetting = "nvidia.deferDetection";
     private const string DeferStorageDetectionSetting = "storage.deferDetection";
+    private const string DeferIntelGpuDetectionSetting = "gpu.deferIntelDetection";
+    private const string DeferControllerDetectionSetting = "controller.deferDetection";
+    private const string DeferPsuDetectionSetting = "psu.deferDetection";
 
     private readonly object _updateLock = new();
     private readonly UpdateVisitor _updateVisitor = new();
@@ -217,6 +220,15 @@ public sealed class HardwareMonitorService : IDisposable
 
         if (!Settings.Contains(DeferNetworkDetectionSetting))
             Settings.SetValue(DeferNetworkDetectionSetting, true);
+
+        if (!Settings.Contains(DeferIntelGpuDetectionSetting))
+            Settings.SetValue(DeferIntelGpuDetectionSetting, true);
+
+        if (!Settings.Contains(DeferControllerDetectionSetting))
+            Settings.SetValue(DeferControllerDetectionSetting, true);
+
+        if (!Settings.Contains(DeferPsuDetectionSetting))
+            Settings.SetValue(DeferPsuDetectionSetting, true);
     }
 
     private void SetHardwareEnabled(string settingName, bool value, Action<bool> setter)

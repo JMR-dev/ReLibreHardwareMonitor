@@ -43,6 +43,12 @@ public class Computer : IComputer
     private const string DeferNvidiaDetectionSetting = "nvidia.deferDetection";
     private const string DeferStorageDetectionEnvironmentVariable = "LHM_STORAGE_DEFER_DETECTION";
     private const string DeferStorageDetectionSetting = "storage.deferDetection";
+    private const string DeferIntelGpuDetectionEnvironmentVariable = "LHM_INTEL_GPU_DEFER_DETECTION";
+    private const string DeferIntelGpuDetectionSetting = "gpu.deferIntelDetection";
+    private const string DeferControllerDetectionEnvironmentVariable = "LHM_CONTROLLER_DEFER_DETECTION";
+    private const string DeferControllerDetectionSetting = "controller.deferDetection";
+    private const string DeferPsuDetectionEnvironmentVariable = "LHM_PSU_DEFER_DETECTION";
+    private const string DeferPsuDetectionSetting = "psu.deferDetection";
 
     private readonly List<IGroup> _groups = new();
     private readonly object _lock = new();
@@ -606,8 +612,15 @@ public class Computer : IComputer
                              DeferNvidiaDetectionSetting,
                              DeferNvidiaDetectionEnvironmentVariable);
 
+            // Intel GPU detection is the most expensive GPU probe but only depends on the (already-created) CPU group,
+            // so it can be deferred to the background like the other GPU/storage/network groups.
             if (_cpuEnabled)
-                AddMeasuredGroup(startupTrace, "IntelGpuGroup", () => new IntelGpuGroup(GetIntelCpus(), _settings));
+                AddMeasuredGroup(startupTrace,
+                                 "IntelGpuGroup",
+                                 () => new IntelGpuGroup(GetIntelCpus(), _settings),
+                                 () => _gpuEnabled && _cpuEnabled,
+                                 DeferIntelGpuDetectionSetting,
+                                 DeferIntelGpuDetectionEnvironmentVariable);
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -617,14 +630,32 @@ public class Computer : IComputer
         cancellationToken.ThrowIfCancellationRequested();
         if (_controllerEnabled)
         {
-            AddMeasuredGroup(startupTrace, "TBalancerGroup", () => new TBalancerGroup(_settings));
-            AddMeasuredGroup(startupTrace, "HeatmasterGroup", () => new HeatmasterGroup(_settings));
-            AddMeasuredGroup(startupTrace, "AquaComputerGroup", () => new AquaComputerGroup(_settings));
-            AddMeasuredGroup(startupTrace, "AeroCoolGroup", () => new AeroCoolGroup(_settings));
-            AddMeasuredGroup(startupTrace, "NzxtGroup", () => new NzxtGroup(_settings));
-            AddMeasuredGroup(startupTrace, "RazerGroup", () => new RazerGroup(_settings));
-            AddMeasuredGroup(startupTrace, "ArcticGroup", () => new ArcticGroup(_settings));
-            AddMeasuredGroup(startupTrace, "MsiGroup", () => new MsiGroup(_settings));
+            // Controllers probe USB/serial buses (with worst-case timeouts), so the whole block can be deferred to a
+            // single background task. It stays sequential there to avoid concurrent serial-port/USB scans.
+            if (ShouldDeferDetection(DeferControllerDetectionSetting, DeferControllerDetectionEnvironmentVariable))
+            {
+                startupTrace?.Skip("ControllerGroups", "Deferred to background.");
+                AddDeferredGroups(() => _controllerEnabled,
+                                  () => new TBalancerGroup(_settings),
+                                  () => new HeatmasterGroup(_settings),
+                                  () => new AquaComputerGroup(_settings),
+                                  () => new AeroCoolGroup(_settings),
+                                  () => new NzxtGroup(_settings),
+                                  () => new RazerGroup(_settings),
+                                  () => new ArcticGroup(_settings),
+                                  () => new MsiGroup(_settings));
+            }
+            else
+            {
+                AddMeasuredGroup(startupTrace, "TBalancerGroup", () => new TBalancerGroup(_settings));
+                AddMeasuredGroup(startupTrace, "HeatmasterGroup", () => new HeatmasterGroup(_settings));
+                AddMeasuredGroup(startupTrace, "AquaComputerGroup", () => new AquaComputerGroup(_settings));
+                AddMeasuredGroup(startupTrace, "AeroCoolGroup", () => new AeroCoolGroup(_settings));
+                AddMeasuredGroup(startupTrace, "NzxtGroup", () => new NzxtGroup(_settings));
+                AddMeasuredGroup(startupTrace, "RazerGroup", () => new RazerGroup(_settings));
+                AddMeasuredGroup(startupTrace, "ArcticGroup", () => new ArcticGroup(_settings));
+                AddMeasuredGroup(startupTrace, "MsiGroup", () => new MsiGroup(_settings));
+            }
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -648,8 +679,20 @@ public class Computer : IComputer
         cancellationToken.ThrowIfCancellationRequested();
         if (_psuEnabled)
         {
-            AddMeasuredGroup(startupTrace, "CorsairPsuGroup", () => new CorsairPsuGroup(_settings));
-            AddMeasuredGroup(startupTrace, "MsiPsuGroup", () => new MsiPsuGroup(_settings));
+            // PSU detection probes HID devices, so it contends with the deferred controllers' USB/HID scans. Defer it
+            // to a background task too, keeping all HID/USB probing off the critical path.
+            if (ShouldDeferDetection(DeferPsuDetectionSetting, DeferPsuDetectionEnvironmentVariable))
+            {
+                startupTrace?.Skip("PsuGroups", "Deferred to background.");
+                AddDeferredGroups(() => _psuEnabled,
+                                  () => new CorsairPsuGroup(_settings),
+                                  () => new MsiPsuGroup(_settings));
+            }
+            else
+            {
+                AddMeasuredGroup(startupTrace, "CorsairPsuGroup", () => new CorsairPsuGroup(_settings));
+                AddMeasuredGroup(startupTrace, "MsiPsuGroup", () => new MsiPsuGroup(_settings));
+            }
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -724,6 +767,59 @@ public class Computer : IComputer
             }
 
             Add(group);
+        });
+    }
+
+    private void AddDeferredGroups(Func<bool> isEnabled, params Func<IGroup>[] createGroups)
+    {
+        CancellationTokenSource cancellationTokenSource = _deferredGroupCancellationTokenSource;
+        if (cancellationTokenSource == null)
+        {
+            foreach (Func<IGroup> createGroup in createGroups)
+            {
+                if (!isEnabled())
+                    return;
+
+                IGroup group = createGroup();
+                if (group != null)
+                    Add(group);
+            }
+
+            return;
+        }
+
+        CancellationToken cancellationToken = cancellationTokenSource.Token;
+        Task.Run(() =>
+        {
+            foreach (Func<IGroup> createGroup in createGroups)
+            {
+                if (cancellationToken.IsCancellationRequested || !isEnabled())
+                    return;
+
+                IGroup group = null;
+                try
+                {
+                    group = createGroup();
+                }
+                catch (Exception ex)
+                {
+                    if (!cancellationToken.IsCancellationRequested)
+                        System.Diagnostics.Debug.WriteLine($"Deferred hardware detection failed: {ex}");
+
+                    continue;
+                }
+
+                if (group == null)
+                    continue;
+
+                if (cancellationToken.IsCancellationRequested || !isEnabled())
+                {
+                    group.Close();
+                    return;
+                }
+
+                Add(group);
+            }
         });
     }
 
