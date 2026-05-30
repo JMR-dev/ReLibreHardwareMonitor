@@ -17,6 +17,7 @@ public sealed class HardwareMonitorService : IDisposable
 {
     private const string DeferDimmDetectionSetting = "memory.deferDimmDetection";
     private const string DeferCpuInitialUpdateSetting = "cpu.deferInitialUpdate";
+    private const string DeferTscEstimationSetting = "cpu.deferTscEstimation";
     private const string DeferNetworkDetectionSetting = "network.deferDetection";
     private const string DeferNvidiaDetectionSetting = "nvidia.deferDetection";
     private const string DeferStorageDetectionSetting = "storage.deferDetection";
@@ -211,6 +212,9 @@ public sealed class HardwareMonitorService : IDisposable
 
         if (!Settings.Contains(DeferCpuInitialUpdateSetting))
             Settings.SetValue(DeferCpuInitialUpdateSetting, true);
+
+        if (!Settings.Contains(DeferTscEstimationSetting))
+            Settings.SetValue(DeferTscEstimationSetting, true);
 
         if (!Settings.Contains(DeferNvidiaDetectionSetting))
             Settings.SetValue(DeferNvidiaDetectionSetting, true);
