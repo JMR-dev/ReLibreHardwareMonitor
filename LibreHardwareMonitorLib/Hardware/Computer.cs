@@ -9,6 +9,8 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware.Battery;
 using LibreHardwareMonitor.Hardware.Controller.AeroCool;
 using LibreHardwareMonitor.Hardware.Controller.AquaComputer;
@@ -35,6 +37,13 @@ namespace LibreHardwareMonitor.Hardware;
 /// </summary>
 public class Computer : IComputer
 {
+    private const string DeferNetworkDetectionEnvironmentVariable = "LHM_NETWORK_DEFER_DETECTION";
+    private const string DeferNetworkDetectionSetting = "network.deferDetection";
+    private const string DeferNvidiaDetectionEnvironmentVariable = "LHM_NVIDIA_DEFER_DETECTION";
+    private const string DeferNvidiaDetectionSetting = "nvidia.deferDetection";
+    private const string DeferStorageDetectionEnvironmentVariable = "LHM_STORAGE_DEFER_DETECTION";
+    private const string DeferStorageDetectionSetting = "storage.deferDetection";
+
     private readonly List<IGroup> _groups = new();
     private readonly object _lock = new();
     private readonly ISettings _settings;
@@ -51,6 +60,7 @@ public class Computer : IComputer
     private bool _psuEnabled;
     private SMBios _smbios;
     private bool _storageEnabled;
+    private CancellationTokenSource _deferredGroupCancellationTokenSource;
 
     /// <summary>
     /// Creates a new <see cref="IComputer" /> instance with basic initial <see cref="Settings" />.
@@ -510,67 +520,201 @@ public class Computer : IComputer
         if (_open)
             return;
 
-        _smbios = new SMBios();
+        StartDeferredGroupRun();
 
-        if (Software.OperatingSystem.IsWindows8OrGreater)
-            Mutexes.Open();
+        try
+        {
+            using HardwareStartupTrace startupTrace = HardwareStartupTrace.Create(_settings);
 
-        OpCode.Open();
+            _smbios = Measure(startupTrace, "SMBios", () => new SMBios());
 
-        AddGroups();
+            if (Software.OperatingSystem.IsWindows8OrGreater)
+                Measure(startupTrace, "Mutexes.Open", Mutexes.Open);
+            else
+                startupTrace?.Skip("Mutexes.Open", "Operating system is older than Windows 8.");
 
-        _open = true;
+            Measure(startupTrace, "OpCode.Open", OpCode.Open);
+
+            AddGroups(startupTrace);
+
+            _open = true;
+        }
+        catch
+        {
+            CancelDeferredGroupRun();
+            throw;
+        }
     }
 
-    private void AddGroups()
+    private void AddGroups(HardwareStartupTrace startupTrace)
     {
         if (_motherboardEnabled)
-            Add(new MotherboardGroup(_smbios, _settings));
+            AddMeasuredGroup(startupTrace, "MotherboardGroup", () => new MotherboardGroup(_smbios, _settings));
 
         if (_cpuEnabled)
-            Add(new CpuGroup(_settings));
+            AddMeasuredGroup(startupTrace, "CpuGroup", () => new CpuGroup(_settings, startupTrace));
 
         if (_memoryEnabled)
-            Add(new MemoryGroup(_settings));
+            AddMeasuredGroup(startupTrace, "MemoryGroup", () => new MemoryGroup(_settings, startupTrace));
 
         if (_gpuEnabled)
         {
-            Add(new AmdGpuGroup(_settings));
-            Add(new NvidiaGroup(_settings));
+            AddMeasuredGroup(startupTrace, "AmdGpuGroup", () => new AmdGpuGroup(_settings));
+            AddMeasuredGroup(startupTrace,
+                             "NvidiaGroup",
+                             () => new NvidiaGroup(_settings),
+                             () => _gpuEnabled,
+                             DeferNvidiaDetectionSetting,
+                             DeferNvidiaDetectionEnvironmentVariable);
 
             if (_cpuEnabled)
-                Add(new IntelGpuGroup(GetIntelCpus(), _settings));
+                AddMeasuredGroup(startupTrace, "IntelGpuGroup", () => new IntelGpuGroup(GetIntelCpus(), _settings));
         }
 
         if (_powerMonitorEnabled)
-            Add(new PowerMonitorGroup(_settings));
+            AddMeasuredGroup(startupTrace, "PowerMonitorGroup", () => new PowerMonitorGroup(_settings));
 
         if (_controllerEnabled)
         {
-            Add(new TBalancerGroup(_settings));
-            Add(new HeatmasterGroup(_settings));
-            Add(new AquaComputerGroup(_settings));
-            Add(new AeroCoolGroup(_settings));
-            Add(new NzxtGroup(_settings));
-            Add(new RazerGroup(_settings));
-            Add(new ArcticGroup(_settings));
-            Add(new MsiGroup(_settings));
+            AddMeasuredGroup(startupTrace, "TBalancerGroup", () => new TBalancerGroup(_settings));
+            AddMeasuredGroup(startupTrace, "HeatmasterGroup", () => new HeatmasterGroup(_settings));
+            AddMeasuredGroup(startupTrace, "AquaComputerGroup", () => new AquaComputerGroup(_settings));
+            AddMeasuredGroup(startupTrace, "AeroCoolGroup", () => new AeroCoolGroup(_settings));
+            AddMeasuredGroup(startupTrace, "NzxtGroup", () => new NzxtGroup(_settings));
+            AddMeasuredGroup(startupTrace, "RazerGroup", () => new RazerGroup(_settings));
+            AddMeasuredGroup(startupTrace, "ArcticGroup", () => new ArcticGroup(_settings));
+            AddMeasuredGroup(startupTrace, "MsiGroup", () => new MsiGroup(_settings));
         }
 
         if (_storageEnabled)
-            Add(new StorageGroup(_settings));
+            AddMeasuredGroup(startupTrace,
+                             "StorageGroup",
+                             () => new StorageGroup(_settings),
+                             () => _storageEnabled,
+                             DeferStorageDetectionSetting,
+                             DeferStorageDetectionEnvironmentVariable);
 
         if (_networkEnabled)
-            Add(new NetworkGroup(_settings));
+            AddMeasuredGroup(startupTrace,
+                             "NetworkGroup",
+                             () => new NetworkGroup(_settings),
+                             () => _networkEnabled,
+                             DeferNetworkDetectionSetting,
+                             DeferNetworkDetectionEnvironmentVariable);
 
         if (_psuEnabled)
         {
-            Add(new CorsairPsuGroup(_settings));
-            Add(new MsiPsuGroup(_settings));
+            AddMeasuredGroup(startupTrace, "CorsairPsuGroup", () => new CorsairPsuGroup(_settings));
+            AddMeasuredGroup(startupTrace, "MsiPsuGroup", () => new MsiPsuGroup(_settings));
         }
 
         if (_batteryEnabled)
-            Add(new BatteryGroup(_settings));
+            AddMeasuredGroup(startupTrace, "BatteryGroup", () => new BatteryGroup(_settings));
+    }
+
+    private static void Measure(HardwareStartupTrace startupTrace, string phase, Action action)
+    {
+        if (startupTrace != null)
+            startupTrace.Measure(phase, action);
+        else
+            action();
+    }
+
+    private static T Measure<T>(HardwareStartupTrace startupTrace, string phase, Func<T> action)
+    {
+        return startupTrace != null ? startupTrace.Measure(phase, action) : action();
+    }
+
+    private void AddMeasuredGroup(HardwareStartupTrace startupTrace, string phase, Func<IGroup> createGroup)
+    {
+        Add(Measure(startupTrace, phase, createGroup));
+    }
+
+    private void AddMeasuredGroup(HardwareStartupTrace startupTrace, string phase, Func<IGroup> createGroup, Func<bool> isEnabled, string deferSettingName, string deferEnvironmentVariable)
+    {
+        if (!ShouldDeferDetection(deferSettingName, deferEnvironmentVariable))
+        {
+            AddMeasuredGroup(startupTrace, phase, createGroup);
+            return;
+        }
+
+        startupTrace?.Skip(phase, "Deferred to background.");
+        AddDeferredGroup(createGroup, isEnabled);
+    }
+
+    private void AddDeferredGroup(Func<IGroup> createGroup, Func<bool> isEnabled)
+    {
+        CancellationTokenSource cancellationTokenSource = _deferredGroupCancellationTokenSource;
+        if (cancellationTokenSource == null)
+        {
+            if (isEnabled())
+                Add(createGroup());
+
+            return;
+        }
+
+        CancellationToken cancellationToken = cancellationTokenSource.Token;
+        Task.Run(() =>
+        {
+            IGroup group = null;
+            try
+            {
+                group = createGroup();
+            }
+            catch (Exception ex)
+            {
+                if (!cancellationToken.IsCancellationRequested)
+                    System.Diagnostics.Debug.WriteLine($"Deferred hardware detection failed: {ex}");
+
+                return;
+            }
+
+            if (group == null)
+                return;
+
+            if (cancellationToken.IsCancellationRequested || !isEnabled())
+            {
+                group.Close();
+                return;
+            }
+
+            Add(group);
+        });
+    }
+
+    private bool ShouldDeferDetection(string settingName, string environmentVariable)
+    {
+        string environmentValue = Environment.GetEnvironmentVariable(environmentVariable);
+        if (!string.IsNullOrWhiteSpace(environmentValue))
+            return IsTruthy(environmentValue);
+
+        return IsTruthy(_settings.GetValue(settingName, "false"));
+    }
+
+    private static bool IsTruthy(string value)
+    {
+        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
+               || value.Equals("true", StringComparison.OrdinalIgnoreCase)
+               || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
+               || value.Equals("on", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void StartDeferredGroupRun()
+    {
+        CancelDeferredGroupRun();
+        _deferredGroupCancellationTokenSource = new CancellationTokenSource();
+    }
+
+    private void CancelDeferredGroupRun()
+    {
+        CancellationTokenSource cancellationTokenSource = _deferredGroupCancellationTokenSource;
+        _deferredGroupCancellationTokenSource = null;
+
+        if (cancellationTokenSource == null)
+            return;
+
+        cancellationTokenSource.Cancel();
+        cancellationTokenSource.Dispose();
     }
 
     private static void NewSection(TextWriter writer)
@@ -655,6 +799,8 @@ public class Computer : IComputer
         if (!_open)
             return;
 
+        CancelDeferredGroupRun();
+
         lock (_lock)
         {
             while (_groups.Count > 0)
@@ -679,8 +825,9 @@ public class Computer : IComputer
         if (!_open)
             return;
 
+        StartDeferredGroupRun();
         RemoveGroups();
-        AddGroups();
+        AddGroups(null);
     }
 
     private void RemoveGroups()

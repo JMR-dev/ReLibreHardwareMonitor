@@ -3,7 +3,9 @@
 // Copyright (C) LibreHardwareMonitor and Contributors.
 
 using System;
+using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
 using LibreHardwareMonitor.Hardware.Storage;
@@ -13,13 +15,21 @@ namespace LibreHardwareMonitor.Windows.WinUI.Services;
 
 public sealed class HardwareMonitorService : IDisposable
 {
+    private const string DeferDimmDetectionSetting = "memory.deferDimmDetection";
+    private const string DeferCpuInitialUpdateSetting = "cpu.deferInitialUpdate";
+    private const string DeferNetworkDetectionSetting = "network.deferDetection";
+    private const string DeferNvidiaDetectionSetting = "nvidia.deferDetection";
+    private const string DeferStorageDetectionSetting = "storage.deferDetection";
+
     private readonly object _updateLock = new();
     private readonly UpdateVisitor _updateVisitor = new();
     private bool _isOpen;
+    private int _treeRebuildQueued;
 
     public HardwareMonitorService(AppSettings settings)
     {
         Settings = settings;
+        ApplyWinUiHardwareDefaults();
         Computer = new Computer(settings);
         Computer.HardwareAdded += HardwareChanged;
         Computer.HardwareRemoved += HardwareChanged;
@@ -181,6 +191,24 @@ public sealed class HardwareMonitorService : IDisposable
         ForceDriveWakeup = Settings.GetValue("forceDriveWakeupItem", false);
     }
 
+    private void ApplyWinUiHardwareDefaults()
+    {
+        if (!Settings.Contains(DeferDimmDetectionSetting))
+            Settings.SetValue(DeferDimmDetectionSetting, true);
+
+        if (!Settings.Contains(DeferCpuInitialUpdateSetting))
+            Settings.SetValue(DeferCpuInitialUpdateSetting, true);
+
+        if (!Settings.Contains(DeferNvidiaDetectionSetting))
+            Settings.SetValue(DeferNvidiaDetectionSetting, true);
+
+        if (!Settings.Contains(DeferStorageDetectionSetting))
+            Settings.SetValue(DeferStorageDetectionSetting, true);
+
+        if (!Settings.Contains(DeferNetworkDetectionSetting))
+            Settings.SetValue(DeferNetworkDetectionSetting, true);
+    }
+
     private void SetHardwareEnabled(string settingName, bool value, Action<bool> setter)
     {
         setter(value);
@@ -192,6 +220,31 @@ public sealed class HardwareMonitorService : IDisposable
     private void HardwareChanged(IHardware hardware)
     {
         if (_isOpen)
-            RebuildTree();
+            QueueTreeRebuild();
+    }
+
+    private void QueueTreeRebuild()
+    {
+        if (Interlocked.Exchange(ref _treeRebuildQueued, 1) == 1)
+            return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(100).ConfigureAwait(false);
+
+                if (_isOpen)
+                    RebuildTree();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Hardware tree rebuild failed: {ex}");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _treeRebuildQueued, 0);
+            }
+        });
     }
 }

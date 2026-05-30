@@ -6,11 +6,13 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
 using LibreHardwareMonitor.Hardware.Storage;
 using LibreHardwareMonitor.Windows.WinUI.Services;
 using LibreHardwareMonitor.Windows.WinUI.Utilities;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Windows.UI;
 
@@ -73,6 +75,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     ];
 
     private readonly HardwareMonitorService _hardwareMonitor;
+    private readonly DispatcherQueue _dispatcherQueue;
     private readonly Logger _logger;
     private readonly Dictionary<string, PlotSeriesViewModel> _plotSeriesByIdentifier = new();
     private readonly RemoteWebServer _remoteWebServer;
@@ -91,6 +94,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     private bool _throttleAtaUpdate;
     private bool _isStarted;
     private bool _isStarting;
+    private int _rootUpdateQueued;
     private string _statusText = "";
     private TemperatureUnit _temperatureUnit;
     private int _updateIntervalIndex;
@@ -98,6 +102,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     public MainWindowViewModel(AppSettings settings)
     {
         Settings = settings;
+        _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
         _hardwareMonitor = new HardwareMonitorService(settings);
         _logger = new Logger(_hardwareMonitor.Computer);
         _remoteWebServer = new RemoteWebServer(
@@ -703,7 +708,31 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
     private void HardwareMonitor_TreeRebuilt(object? sender, EventArgs e)
     {
-        UpdateRoot();
+        if (_dispatcherQueue.HasThreadAccess)
+        {
+            UpdateRoot();
+            UpdateStatus();
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _rootUpdateQueued, 1) == 1)
+            return;
+
+        if (!_dispatcherQueue.TryEnqueue(() =>
+        {
+            try
+            {
+                UpdateRoot();
+                UpdateStatus();
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _rootUpdateQueued, 0);
+            }
+        }))
+        {
+            Interlocked.Exchange(ref _rootUpdateQueued, 0);
+        }
     }
 
     private void ApplySensorValuesTimeWindow()

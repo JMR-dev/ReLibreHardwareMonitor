@@ -1,7 +1,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
 // Copyright (C) LibreHardwareMonitor and Contributors.
-// Partial Copyright (C) Michael Möller <mmoeller@openhardwaremonitor.org> and Contributors.
+// Partial Copyright (C) Michael Mï¿½ller <mmoeller@openhardwaremonitor.org> and Contributors.
 // All Rights Reserved.
 
 using System;
@@ -17,8 +17,15 @@ internal class CpuGroup : IGroup
     private readonly CpuId[][][] _threads;
 
     public CpuGroup(ISettings settings)
+        : this(settings, null)
+    { }
+
+    internal CpuGroup(ISettings settings, HardwareStartupTrace startupTrace)
     {
-        CpuId[][] processorThreads = GetProcessorThreads();
+        CpuId[][] processorThreads = Measure(startupTrace,
+                                             "CpuGroup.GetProcessorThreads",
+                                             GetProcessorThreads,
+                                             DescribeProcessorThreads);
         _threads = new CpuId[processorThreads.Length][][];
 
         int index = 0;
@@ -27,44 +34,18 @@ internal class CpuGroup : IGroup
             if (threads.Length == 0)
                 continue;
 
-            CpuId[][] coreThreads = GroupThreadsByCore(threads);
+            CpuId[][] coreThreads = Measure(startupTrace,
+                                            $"CpuGroup.Processor{index}.GroupThreadsByCore",
+                                            () => GroupThreadsByCore(threads),
+                                            cores => $"{cores.Length} core(s), {threads.Length} thread(s)");
             _threads[index] = coreThreads;
 
-            switch (threads[0].Vendor)
-            {
-                case Vendor.Intel:
-                    _hardware.Add(new IntelCpu(index, coreThreads, settings));
-                    break;
-                case Vendor.AMD:
-                    switch (threads[0].Family)
-                    {
-                        case 0x0F:
-                            _hardware.Add(new Amd0FCpu(index, coreThreads, settings));
-                            break;
-                        case 0x10:
-                        case 0x11:
-                        case 0x12:
-                        case 0x14:
-                        case 0x15:
-                        case 0x16:
-                            // TODO: https://github.com/namazso/PawnIO.Modules/issues/32
-                            //_hardware.Add(new Amd10Cpu(index, coreThreads, settings));
-                            break;
-                        case 0x17:
-                        case 0x19:
-                        case 0x1A:
-                            _hardware.Add(new Amd17Cpu(index, coreThreads, settings));
-                            break;
-                        default:
-                            _hardware.Add(new GenericCpu(index, coreThreads, settings));
-                            break;
-                    }
-
-                    break;
-                default:
-                    _hardware.Add(new GenericCpu(index, coreThreads, settings));
-                    break;
-            }
+            GenericCpu cpu = Measure(startupTrace,
+                                     $"CpuGroup.Processor{index}.{GetCpuConstructorName(threads[0])}",
+                                     () => CreateCpu(index, coreThreads, settings, startupTrace),
+                                     DescribeCpu);
+            if (cpu != null)
+                _hardware.Add(cpu);
 
             index++;
         }
@@ -121,6 +102,88 @@ internal class CpuGroup : IGroup
         {
             cpu.Close();
         }
+    }
+
+    private static GenericCpu CreateCpu(int index, CpuId[][] coreThreads, ISettings settings, HardwareStartupTrace startupTrace)
+    {
+        CpuId thread = coreThreads[0][0];
+
+        switch (thread.Vendor)
+        {
+            case Vendor.Intel:
+                return new IntelCpu(index, coreThreads, settings, startupTrace);
+            case Vendor.AMD:
+                switch (thread.Family)
+                {
+                    case 0x0F:
+                        return new Amd0FCpu(index, coreThreads, settings);
+                    case 0x10:
+                    case 0x11:
+                    case 0x12:
+                    case 0x14:
+                    case 0x15:
+                    case 0x16:
+                        // TODO: https://github.com/namazso/PawnIO.Modules/issues/32
+                        return null;
+                    case 0x17:
+                    case 0x19:
+                    case 0x1A:
+                        return new Amd17Cpu(index, coreThreads, settings);
+                    default:
+                        return new GenericCpu(index, coreThreads, settings);
+                }
+            default:
+                return new GenericCpu(index, coreThreads, settings);
+        }
+    }
+
+    private static string GetCpuConstructorName(CpuId thread)
+    {
+        switch (thread.Vendor)
+        {
+            case Vendor.Intel:
+                return nameof(IntelCpu);
+            case Vendor.AMD:
+                switch (thread.Family)
+                {
+                    case 0x0F:
+                        return nameof(Amd0FCpu);
+                    case 0x10:
+                    case 0x11:
+                    case 0x12:
+                    case 0x14:
+                    case 0x15:
+                    case 0x16:
+                        return "UnsupportedAmdCpu";
+                    case 0x17:
+                    case 0x19:
+                    case 0x1A:
+                        return nameof(Amd17Cpu);
+                    default:
+                        return nameof(GenericCpu);
+                }
+            default:
+                return nameof(GenericCpu);
+        }
+    }
+
+    private static string DescribeProcessorThreads(CpuId[][] processorThreads)
+    {
+        int threadCount = 0;
+        foreach (CpuId[] threads in processorThreads)
+            threadCount += threads.Length;
+
+        return $"{processorThreads.Length} processor(s), {threadCount} thread(s)";
+    }
+
+    private static string DescribeCpu(GenericCpu cpu)
+    {
+        return cpu != null ? $"{cpu.Name}, {cpu.Sensors.Length} sensor(s)" : "Unsupported CPU family";
+    }
+
+    private static T Measure<T>(HardwareStartupTrace startupTrace, string phase, Func<T> action, Func<T, string> getDetail)
+    {
+        return startupTrace != null ? startupTrace.Measure(phase, action, getDetail) : action();
     }
 
     private static CpuId[][] GetProcessorThreads()
@@ -210,3 +273,4 @@ internal class CpuGroup : IGroup
         }
     }
 }
+

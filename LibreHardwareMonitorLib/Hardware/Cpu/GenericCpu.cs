@@ -34,7 +34,11 @@ public class GenericCpu : Hardware
     private long _lastTime;
     private ulong _lastTimeStampCount;
 
-    public GenericCpu(int processorIndex, CpuId[][] cpuId, ISettings settings) : base(cpuId[0][0].Name, CreateIdentifier(cpuId[0][0].Vendor, processorIndex), settings)
+    public GenericCpu(int processorIndex, CpuId[][] cpuId, ISettings settings)
+        : this(processorIndex, cpuId, settings, null)
+    { }
+
+    internal GenericCpu(int processorIndex, CpuId[][] cpuId, ISettings settings, HardwareStartupTrace startupTrace) : base(cpuId[0][0].Name, CreateIdentifier(cpuId[0][0].Vendor, processorIndex), settings)
     {
         _cpuId = cpuId;
         _vendor = cpuId[0][0].Vendor;
@@ -59,7 +63,7 @@ public class GenericCpu : Hardware
         _totalLoad = _coreCount > 1 ? new Sensor("CPU Total", 0, SensorType.Load, this, settings) : null;
         _maxLoad = _coreCount > 1 ? new Sensor("CPU Core Max", 1, SensorType.Load, this, settings) : null;
 
-        _cpuLoad = new CpuLoad(cpuId);
+        _cpuLoad = Measure(startupTrace, "GenericCpu.CpuLoad", () => new CpuLoad(cpuId), load => load.IsAvailable ? "Available" : "Unavailable");
         if (_cpuLoad.IsAvailable)
         {
             _threadLoads = new Sensor[_threadCount];
@@ -93,12 +97,19 @@ public class GenericCpu : Hardware
         if (HasTimeStampCounter)
         {
             GroupAffinity previousAffinity = ThreadAffinity.Set(cpuId[0][0].Affinity);
-            EstimateTimeStampCounterFrequency(out _estimatedTimeStampCounterFrequency, out _estimatedTimeStampCounterFrequencyError);
+            double estimatedTimeStampCounterFrequency = 0;
+            double estimatedTimeStampCounterFrequencyError = 0;
+            Measure(startupTrace,
+                    "GenericCpu.EstimateTimeStampCounterFrequency",
+                    () => EstimateTimeStampCounterFrequency(out estimatedTimeStampCounterFrequency, out estimatedTimeStampCounterFrequencyError));
+            _estimatedTimeStampCounterFrequency = estimatedTimeStampCounterFrequency;
+            _estimatedTimeStampCounterFrequencyError = estimatedTimeStampCounterFrequencyError;
             ThreadAffinity.Set(previousAffinity);
         }
         else
         {
             _estimatedTimeStampCounterFrequency = 0;
+            _estimatedTimeStampCounterFrequencyError = 0;
         }
 
         TimeStampCounterFrequency = _estimatedTimeStampCounterFrequency;
@@ -140,6 +151,19 @@ public class GenericCpu : Hardware
         };
 
         return new Identifier(s, processorIndex.ToString(CultureInfo.InvariantCulture));
+    }
+
+    private static void Measure(HardwareStartupTrace startupTrace, string phase, Action action)
+    {
+        if (startupTrace != null)
+            startupTrace.Measure(phase, action);
+        else
+            action();
+    }
+
+    private static T Measure<T>(HardwareStartupTrace startupTrace, string phase, Func<T> action, Func<T, string> getDetail)
+    {
+        return startupTrace != null ? startupTrace.Measure(phase, action, getDetail) : action();
     }
 
     private static void EstimateTimeStampCounterFrequency(out double frequency, out double error)

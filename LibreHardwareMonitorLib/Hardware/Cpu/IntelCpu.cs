@@ -14,6 +14,9 @@ namespace LibreHardwareMonitor.Hardware.Cpu;
 
 internal sealed class IntelCpu : GenericCpu
 {
+    private const string DeferInitialUpdateEnvironmentVariable = "LHM_CPU_DEFER_INITIAL_UPDATE";
+    private const string DeferInitialUpdateSetting = "cpu.deferInitialUpdate";
+
     private readonly Sensor _busClock;
     private readonly Sensor _coreAvg;
     private readonly Sensor[] _coreClocks;
@@ -36,12 +39,16 @@ internal sealed class IntelCpu : GenericCpu
 
     private readonly IntelMsr _pawnModule;
 
-    public IntelCpu(int processorIndex, CpuId[][] cpuId, ISettings settings) : base(processorIndex, cpuId, settings)
+    public IntelCpu(int processorIndex, CpuId[][] cpuId, ISettings settings)
+        : this(processorIndex, cpuId, settings, null)
+    { }
+
+    internal IntelCpu(int processorIndex, CpuId[][] cpuId, ISettings settings, HardwareStartupTrace startupTrace) : base(processorIndex, cpuId, settings, startupTrace)
     {
         if (Software.OperatingSystem.IsUnix)
             return;
 
-        _pawnModule = new IntelMsr();
+        _pawnModule = Measure(startupTrace, "IntelCpu.CreateMsrModule", () => new IntelMsr());
 
         uint eax;
 
@@ -527,7 +534,17 @@ internal sealed class IntelCpu : GenericCpu
             ActivateSensor(_coreVIDs[i]);
         }
 
-        Update();
+        if (ShouldDeferInitialUpdate(settings))
+        {
+            if (HasTimeStampCounter && _timeStampCounterMultiplier > 0)
+                ActivateSensor(_busClock);
+
+            startupTrace?.Skip("IntelCpu.InitialUpdate", "Deferred until first regular update.");
+        }
+        else
+        {
+            Measure(startupTrace, "IntelCpu.InitialUpdate", Update);
+        }
     }
 
     public float EnergyUnitsMultiplier { get; }
@@ -553,6 +570,36 @@ internal sealed class IntelCpu : GenericCpu
         }
 
         return result;
+    }
+
+    private static void Measure(HardwareStartupTrace startupTrace, string phase, Action action)
+    {
+        if (startupTrace != null)
+            startupTrace.Measure(phase, action);
+        else
+            action();
+    }
+
+    private static T Measure<T>(HardwareStartupTrace startupTrace, string phase, Func<T> action)
+    {
+        return startupTrace != null ? startupTrace.Measure(phase, action) : action();
+    }
+
+    private static bool ShouldDeferInitialUpdate(ISettings settings)
+    {
+        string environmentValue = Environment.GetEnvironmentVariable(DeferInitialUpdateEnvironmentVariable);
+        if (!string.IsNullOrWhiteSpace(environmentValue))
+            return IsTruthy(environmentValue);
+
+        return IsTruthy(settings.GetValue(DeferInitialUpdateSetting, "false"));
+    }
+
+    private static bool IsTruthy(string value)
+    {
+        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
+               || value.Equals("true", StringComparison.OrdinalIgnoreCase)
+               || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
+               || value.Equals("on", StringComparison.OrdinalIgnoreCase);
     }
 
     public override string GetReport()

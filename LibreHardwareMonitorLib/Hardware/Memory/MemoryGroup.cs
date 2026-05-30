@@ -7,6 +7,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,6 +21,9 @@ namespace LibreHardwareMonitor.Hardware.Memory;
 
 internal class MemoryGroup : IGroup, IHardwareChanged
 {
+    private const string DeferDimmDetectionEnvironmentVariable = "LHM_MEMORY_DEFER_DIMM_DETECTION";
+    private const string DeferDimmDetectionSetting = "memory.deferDimmDetection";
+    private static readonly TimeSpan _retryInterval = TimeSpan.FromSeconds(2.5);
     private static readonly object _lock = new();
     private List<Hardware> _hardware = [];
 
@@ -28,23 +32,35 @@ internal class MemoryGroup : IGroup, IHardwareChanged
     private bool _disposed = false;
 
     public MemoryGroup(ISettings settings)
+        : this(settings, null)
+    { }
+
+    internal MemoryGroup(ISettings settings, HardwareStartupTrace startupTrace)
     {
-        if (DriverManager.Driver is null || !DriverManager.Driver.IsOpen)
+        Measure(startupTrace, "MemoryGroup.Driver.Configure", () =>
         {
-            // Assign implementation of IDriver.
-            DriverManager.Driver = new RAMSPDToolkitDriver();
-            SMBusManager.UseWMI = false;
-        }
+            if (DriverManager.Driver is null || !DriverManager.Driver.IsOpen)
+            {
+                // Assign implementation of IDriver.
+                DriverManager.Driver = new RAMSPDToolkitDriver();
+                SMBusManager.UseWMI = false;
+            }
+        });
 
-        _hardware.Add(new VirtualMemory(settings));
-        _hardware.Add(new TotalMemory(settings));
+        _hardware.Add(Measure(startupTrace, "MemoryGroup.VirtualMemory", () => new VirtualMemory(settings)));
+        _hardware.Add(Measure(startupTrace, "MemoryGroup.TotalMemory", () => new TotalMemory(settings)));
 
-        if (DriverManager.Driver == null || !DriverManager.LoadDriver())
+        if (!Measure(startupTrace, "MemoryGroup.Driver.LoadDriver", () => DriverManager.Driver != null && DriverManager.LoadDriver(), loaded => loaded ? "Loaded" : "Unavailable"))
         {
             return;
         }
 
-        if (!TryAddDimms(settings))
+        if (ShouldDeferDimmDetection(settings))
+        {
+            startupTrace?.Skip("MemoryGroup.DimmDetection", "Deferred to background.");
+            StartDimmDetectionTask(settings, TimeSpan.Zero);
+        }
+        else if (!TryAddDimms(settings, startupTrace))
         {
             StartRetryTask(settings);
         }
@@ -97,6 +113,11 @@ internal class MemoryGroup : IGroup, IHardwareChanged
 
     private bool TryAddDimms(ISettings settings)
     {
+        return TryAddDimms(settings, null);
+    }
+
+    private bool TryAddDimms(ISettings settings, HardwareStartupTrace startupTrace)
+    {
         try
         {
             lock (_lock)
@@ -106,9 +127,14 @@ internal class MemoryGroup : IGroup, IHardwareChanged
                     return false;
                 }
 
-                if (DetectThermalSensors(out List<SPDAccessor> accessors))
+                List<SPDAccessor> accessors = [];
+                bool detected = Measure(startupTrace,
+                                        "MemoryGroup.DetectThermalSensors",
+                                        () => DetectThermalSensors(out accessors, startupTrace),
+                                        result => result ? $"{accessors.Count} DIMM accessor(s)" : "No DIMM accessors");
+                if (detected)
                 {
-                    AddDimms(accessors, settings);
+                    Measure(startupTrace, "MemoryGroup.AddDimms", () => AddDimms(accessors, settings, startupTrace));
                     return true;
                 }
             }
@@ -124,40 +150,66 @@ internal class MemoryGroup : IGroup, IHardwareChanged
 
     private void StartRetryTask(ISettings settings)
     {
+        StartDimmDetectionTask(settings, _retryInterval);
+    }
+
+    private void StartDimmDetectionTask(ISettings settings, TimeSpan initialDelay)
+    {
         _cancellationTokenSource = new CancellationTokenSource();
+        CancellationToken cancellationToken = _cancellationTokenSource.Token;
 
         Task.Run(async () =>
         {
-            int retryRemaining = 5;
-
-            while (!_cancellationTokenSource.IsCancellationRequested && --retryRemaining > 0)
+            try
             {
-                await Task.Delay(TimeSpan.FromSeconds(2.5), _cancellationTokenSource.Token).ConfigureAwait(false);
+                int retryRemaining = 5;
+                TimeSpan delay = initialDelay;
 
-                if (TryAddDimms(settings))
+                while (!cancellationToken.IsCancellationRequested && retryRemaining-- > 0)
                 {
-                    break;
+                    if (delay > TimeSpan.Zero)
+                        await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+
+                    if (TryAddDimms(settings))
+                        break;
+
+                    delay = _retryInterval;
                 }
             }
-        }, _cancellationTokenSource.Token);
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+        }, cancellationToken);
     }
 
     private static bool DetectThermalSensors(out List<SPDAccessor> accessors)
+    {
+        return DetectThermalSensors(out accessors, null);
+    }
+
+    private static bool DetectThermalSensors(out List<SPDAccessor> accessors, HardwareStartupTrace startupTrace)
     {
         accessors = [];
 
         bool ramDetected = false;
 
-        SMBusManager.DetectSMBuses();
+        Measure(startupTrace, "MemoryGroup.SMBus.DetectSMBuses", SMBusManager.DetectSMBuses);
 
         //Go through detected SMBuses
+        int busIndex = 0;
         foreach (SMBusInterface smbus in SMBusManager.RegisteredSMBuses)
         {
+            string busName = $"{smbus.GetType().Name}[{busIndex}]";
+
             //Go through possible RAM slots
             for (byte i = SPDConstants.SPD_BEGIN; i <= SPDConstants.SPD_END; ++i)
             {
                 //Detect type of RAM, if available
-                SPDDetector detector = new(smbus, i);
+                string address = "0x" + i.ToString("X2", CultureInfo.InvariantCulture);
+                SPDDetector detector = Measure(startupTrace,
+                                               $"MemoryGroup.SPDDetector.{busName}.{address}",
+                                               () => new SPDDetector(smbus, i),
+                                               result => result.Accessor != null ? $"Detected {result.Accessor.GetType().Name} index {result.Accessor.Index}" : "No RAM");
 
                 //RAM available and detected
                 if (detector.Accessor != null)
@@ -168,12 +220,31 @@ internal class MemoryGroup : IGroup, IHardwareChanged
                     ramDetected = true;
                 }
             }
+
+            busIndex++;
         }
 
         return ramDetected;
     }
 
-    private void AddDimms(List<SPDAccessor> accessors, ISettings settings)
+    private static bool ShouldDeferDimmDetection(ISettings settings)
+    {
+        string environmentValue = Environment.GetEnvironmentVariable(DeferDimmDetectionEnvironmentVariable);
+        if (!string.IsNullOrWhiteSpace(environmentValue))
+            return IsTruthy(environmentValue);
+
+        return IsTruthy(settings.GetValue(DeferDimmDetectionSetting, "false"));
+    }
+
+    private static bool IsTruthy(string value)
+    {
+        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
+               || value.Equals("true", StringComparison.OrdinalIgnoreCase)
+               || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
+               || value.Equals("on", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void AddDimms(List<SPDAccessor> accessors, ISettings settings, HardwareStartupTrace startupTrace)
     {
         List<Hardware> additions = [];
 
@@ -181,17 +252,39 @@ internal class MemoryGroup : IGroup, IHardwareChanged
         {
             //Default value
             string name = $"DIMM #{ram.Index}";
+            string phasePrefix = $"MemoryGroup.DIMM{ram.Index}";
 
             //Check if we can switch to the correct page
-            if (ram.ChangePage(PageData.ModulePartNumber))
-                name = $"{ram.GetModuleManufacturerString()} - {ram.ModulePartNumber()} (#{ram.Index})";
+            if (Measure(startupTrace, $"{phasePrefix}.ChangePage", () => ram.ChangePage(PageData.ModulePartNumber), changed => changed ? "Module part number page selected" : "Module part number page unavailable"))
+                name = Measure(startupTrace, $"{phasePrefix}.ReadName", () => $"{ram.GetModuleManufacturerString()} - {ram.ModulePartNumber()} (#{ram.Index})", result => result);
 
-            DimmMemory memory = new(ram, name, new Identifier("memory", "dimm", $"{ram.Index}"), settings);
+            DimmMemory memory = Measure(startupTrace,
+                                        $"{phasePrefix}.CreateHardware",
+                                        () => new DimmMemory(ram, name, new Identifier("memory", "dimm", $"{ram.Index}"), settings),
+                                        memory => $"{memory.Sensors.Length} sensor(s)");
             additions.Add(memory);
         }
 
         _hardware = [.. _hardware, .. additions];
         foreach (Hardware hardware in additions)
             HardwareAdded?.Invoke(hardware);
+    }
+
+    private static void Measure(HardwareStartupTrace startupTrace, string phase, Action action)
+    {
+        if (startupTrace != null)
+            startupTrace.Measure(phase, action);
+        else
+            action();
+    }
+
+    private static T Measure<T>(HardwareStartupTrace startupTrace, string phase, Func<T> action)
+    {
+        return startupTrace != null ? startupTrace.Measure(phase, action) : action();
+    }
+
+    private static T Measure<T>(HardwareStartupTrace startupTrace, string phase, Func<T> action, Func<T, string> getDetail)
+    {
+        return startupTrace != null ? startupTrace.Measure(phase, action, getDetail) : action();
     }
 }
