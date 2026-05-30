@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <Platforms>x64;x86;ARM64</Platforms>
+    <RuntimeIdentifiers>win-x64;win-x86;win-arm64</RuntimeIdentifiers>
+    <AssemblyName>LibreHardwareMonitor.Windows.WinUI</AssemblyName>
+    <AssemblyTitle>Libre Hardware Monitor</AssemblyTitle>
+    <RootNamespace>LibreHardwareMonitor.Windows.WinUI</RootNamespace>
+    <ApplicationIcon>..\LibreHardwareMonitor.Windows.Forms\Resources\icon.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <OutputPath>..\bin\$(Configuration)\</OutputPath>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LibreHardwareMonitorLib\LibreHardwareMonitorLib.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\LibreHardwareMonitor.Windows.Forms\Resources\icon.ico" Link="Resources\icon.ico" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="..\LibreHardwareMonitor.Windows.Forms\Resources\PawnIO_setup.exe" Link="Resources\PawnIO_setup.exe" />
+    <EmbeddedResource Include="..\LibreHardwareMonitor.Windows.Forms\Resources\*.png" LinkBase="Resources" />
+    <EmbeddedResource Include="..\LibreHardwareMonitor.Windows.Forms\Resources\Web\**" LinkBase="Resources\Web" />
+  </ItemGroup>
+</Project>

@@ -3,6 +3,8 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 18
 VisualStudioVersion = 18.0.11018.127
 MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LibreHardwareMonitor.Windows.WinUI", "LibreHardwareMonitor.Windows.WinUI\LibreHardwareMonitor.Windows.WinUI.csproj", "{49D41E03-7028-4B28-9F5E-4558D0E26EA2}"
+EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LibreHardwareMonitorLib", "LibreHardwareMonitorLib\LibreHardwareMonitorLib.csproj", "{B0397530-545A-471D-BB74-027AE456DF1A}"
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LibreHardwareMonitor.Windows.Forms", "LibreHardwareMonitor.Windows.Forms\LibreHardwareMonitor.Windows.Forms.csproj", "{F5E0C1F7-9E9B-46F2-AC88-8C9C1C923880}"
@@ -51,6 +53,18 @@ Global
 		{F5E0C1F7-9E9B-46F2-AC88-8C9C1C923880}.Release|x64.Build.0 = Release|x64
 		{F5E0C1F7-9E9B-46F2-AC88-8C9C1C923880}.Release|x86.ActiveCfg = Release|x86
 		{F5E0C1F7-9E9B-46F2-AC88-8C9C1C923880}.Release|x86.Build.0 = Release|x86
+		{49D41E03-7028-4B28-9F5E-4558D0E26EA2}.Debug|ARM64.ActiveCfg = Debug|ARM64
+		{49D41E03-7028-4B28-9F5E-4558D0E26EA2}.Debug|ARM64.Build.0 = Debug|ARM64
+		{49D41E03-7028-4B28-9F5E-4558D0E26EA2}.Debug|x64.ActiveCfg = Debug|x64
+		{49D41E03-7028-4B28-9F5E-4558D0E26EA2}.Debug|x64.Build.0 = Debug|x64
+		{49D41E03-7028-4B28-9F5E-4558D0E26EA2}.Debug|x86.ActiveCfg = Debug|x86
+		{49D41E03-7028-4B28-9F5E-4558D0E26EA2}.Debug|x86.Build.0 = Debug|x86
+		{49D41E03-7028-4B28-9F5E-4558D0E26EA2}.Release|ARM64.ActiveCfg = Release|ARM64
+		{49D41E03-7028-4B28-9F5E-4558D0E26EA2}.Release|ARM64.Build.0 = Release|ARM64
+		{49D41E03-7028-4B28-9F5E-4558D0E26EA2}.Release|x64.ActiveCfg = Release|x64
+		{49D41E03-7028-4B28-9F5E-4558D0E26EA2}.Release|x64.Build.0 = Release|x64
+		{49D41E03-7028-4B28-9F5E-4558D0E26EA2}.Release|x86.ActiveCfg = Release|x86
+		{49D41E03-7028-4B28-9F5E-4558D0E26EA2}.Release|x86.Build.0 = Release|x86
 		{E73BB233-D88B-44A7-A98F-D71EE158381D}.Debug|ARM64.ActiveCfg = Debug|ARM64
 		{E73BB233-D88B-44A7-A98F-D71EE158381D}.Debug|ARM64.Build.0 = Debug|ARM64
 		{E73BB233-D88B-44A7-A98F-D71EE158381D}.Debug|x64.ActiveCfg = Debug|x64

@@ -1,0 +1,1239 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// If a copy of the MPL was not distributed with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+// Copyright (C) LibreHardwareMonitor and Contributors.
+
+using System;
+using System.Collections.Generic;
+using System.Collections.Specialized;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading.Tasks;
+using LibreHardwareMonitor.Hardware;
+using LibreHardwareMonitor.Windows.WinUI.Services;
+using LibreHardwareMonitor.Windows.WinUI.ViewModels;
+using Microsoft.UI;
+using Microsoft.UI.Dispatching;
+using Microsoft.UI.Windowing;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Data;
+using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Markup;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Shapes;
+using Windows.Graphics;
+using Windows.Storage;
+using Windows.Storage.Pickers;
+using WinRT.Interop;
+using IOPath = System.IO.Path;
+
+namespace LibreHardwareMonitor.Windows.WinUI;
+
+public sealed class MainWindow : Window
+{
+    private const double SensorColumnPadding = 72;
+    private const double SensorTreeIndentWidth = 20;
+    private const double ValueColumnPadding = 18;
+
+    private readonly AppWindow _appWindow;
+    private readonly Grid _contentGrid;
+    private readonly DispatcherQueueTimer _timer;
+    private readonly Canvas _plotCanvas;
+    private readonly Grid _plotPane;
+    private readonly Grid _rootGrid;
+    private readonly TreeView _sensorTree;
+    private readonly Grid _sensorPane;
+    private readonly List<Grid> _sensorRowGrids = [];
+    private readonly double[] _sensorColumnWidths = [320, 120, 120, 120];
+    private Grid? _sensorHeader;
+    private bool _isUpdating;
+    private bool _isMonitoringStarted;
+
+    public MainWindow()
+    {
+        AppSettings settings = AppSettings.LoadDefault();
+        ViewModel = new MainWindowViewModel(settings);
+
+        IntPtr hwnd = WindowNative.GetWindowHandle(this);
+        WindowId windowId = Win32Interop.GetWindowIdFromWindow(hwnd);
+        _appWindow = AppWindow.GetFromWindowId(windowId);
+        _appWindow.Title = "Libre Hardware Monitor";
+
+        Grid root = BuildRoot();
+        Content = root;
+        _rootGrid = root;
+
+        _contentGrid = (Grid)root.Children[1];
+        _sensorPane = (Grid)_contentGrid.Children[0];
+        _plotPane = (Grid)_contentGrid.Children[1];
+        _sensorTree = (TreeView)((Grid)_sensorPane.Children[1]).Children[0];
+        _plotCanvas = (Canvas)_plotPane.Children[1];
+
+        RestoreWindowBounds();
+        MaximizeWindow();
+        ApplyTheme();
+        UpdatePlotLayout();
+
+        _timer = DispatcherQueue.CreateTimer();
+        _timer.Interval = ViewModel.UpdateInterval;
+        _timer.Tick += UpdateTimer_Tick;
+
+        ViewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName is nameof(ViewModel.UpdateInterval) or nameof(ViewModel.UpdateIntervalIndex))
+                _timer.Interval = ViewModel.UpdateInterval;
+
+            if (args.PropertyName is nameof(ViewModel.ShowPlot)
+                or nameof(ViewModel.PlotLocation)
+                or nameof(ViewModel.PlotGridColumn)
+                or nameof(ViewModel.PlotGridRow))
+                UpdatePlotLayout();
+
+            if (args.PropertyName == nameof(ViewModel.ShowHiddenSensors))
+                RebuildSensorTree();
+
+            if (args.PropertyName is nameof(ViewModel.ShowValueColumn)
+                or nameof(ViewModel.ShowMinColumn)
+                or nameof(ViewModel.ShowMaxColumn))
+                UpdateSensorColumnWidths();
+
+            if (args.PropertyName == nameof(ViewModel.ThemeMode))
+                ApplyTheme();
+        };
+        ViewModel.RootItems.CollectionChanged += RootItems_CollectionChanged;
+        ViewModel.PlotInvalidated += (_, _) => DrawPlot();
+
+        Closed += MainWindow_Closed;
+
+    }
+
+    public MainWindowViewModel ViewModel { get; }
+
+    public void StartMonitoringAfterActivation()
+    {
+        DispatcherQueue.TryEnqueue(async () =>
+        {
+            if (_isMonitoringStarted)
+                return;
+
+            _isMonitoringStarted = true;
+            try
+            {
+                await Task.Delay(250);
+                await ViewModel.StartAsync();
+                RebuildSensorTree();
+                _timer.Start();
+            }
+            catch (Exception ex)
+            {
+                RecordRuntimeError("Hardware initialization failed", ex);
+            }
+        });
+    }
+
+    private Grid BuildRoot()
+    {
+        Grid root = new()
+        {
+            Background = new SolidColorBrush(Colors.White),
+            RowDefinitions =
+            {
+                new RowDefinition { Height = GridLength.Auto },
+                new RowDefinition { Height = new GridLength(1, GridUnitType.Star) },
+                new RowDefinition { Height = GridLength.Auto }
+            }
+        };
+
+        root.Children.Add(BuildMenuBar());
+
+        Grid contentGrid = new()
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = new GridLength(320) }
+            },
+            RowDefinitions =
+            {
+                new RowDefinition { Height = new GridLength(1, GridUnitType.Star) },
+                new RowDefinition { Height = new GridLength(220) }
+            }
+        };
+        Grid.SetRow(contentGrid, 1);
+
+        contentGrid.Children.Add(BuildSensorPane());
+        contentGrid.Children.Add(BuildPlotPane());
+        root.Children.Add(contentGrid);
+
+        TextBlock statusText = new()
+        {
+            Padding = new Thickness(8, 4, 8, 4),
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        Bind(statusText, TextBlock.TextProperty, ViewModel, nameof(ViewModel.StatusText));
+        Grid.SetRow(statusText, 2);
+        root.Children.Add(statusText);
+
+        return root;
+    }
+
+    private MenuBar BuildMenuBar()
+    {
+        MenuBar menuBar = new();
+
+        MenuBarItem file = new() { Title = "File" };
+        file.Items.Add(CreateMenuItem("Save Report...", async (_, _) => await SaveReportAsync()));
+        file.Items.Add(new MenuFlyoutSeparator());
+        file.Items.Add(CreateMenuItem("Reset", (_, _) => ViewModel.ResetHardware()));
+        MenuFlyoutSubItem hardware = new() { Text = "Hardware" };
+        hardware.Items.Add(CreateToggleItem("Motherboard", nameof(ViewModel.IsMotherboardEnabled)));
+        hardware.Items.Add(CreateToggleItem("CPU", nameof(ViewModel.IsCpuEnabled)));
+        hardware.Items.Add(CreateToggleItem("Memory", nameof(ViewModel.IsMemoryEnabled)));
+        hardware.Items.Add(CreateToggleItem("GPU", nameof(ViewModel.IsGpuEnabled)));
+        hardware.Items.Add(CreateToggleItem("Power Monitors", nameof(ViewModel.IsPowerMonitorEnabled)));
+        hardware.Items.Add(CreateToggleItem("Fan Controllers", nameof(ViewModel.IsControllerEnabled)));
+        hardware.Items.Add(CreateToggleItem("Storage Devices", nameof(ViewModel.IsStorageEnabled)));
+        hardware.Items.Add(CreateToggleItem("Network", nameof(ViewModel.IsNetworkEnabled)));
+        hardware.Items.Add(CreateToggleItem("Power Supplies", nameof(ViewModel.IsPsuEnabled)));
+        hardware.Items.Add(CreateToggleItem("Battery", nameof(ViewModel.IsBatteryEnabled)));
+        file.Items.Add(hardware);
+        file.Items.Add(new MenuFlyoutSeparator());
+        file.Items.Add(CreateMenuItem("Exit", (_, _) => Close()));
+        menuBar.Items.Add(file);
+
+        MenuBarItem view = new() { Title = "View" };
+        view.Items.Add(CreateMenuItem("Reset Min/Max", (_, _) => ViewModel.ResetMinMax()));
+        view.Items.Add(CreateMenuItem("Expand All Nodes", (_, _) =>
+        {
+            ViewModel.SetAllExpanded(true);
+            RebuildSensorTree();
+        }));
+        view.Items.Add(CreateMenuItem("Collapse All Nodes", (_, _) =>
+        {
+            ViewModel.SetAllExpanded(false);
+            RebuildSensorTree();
+        }));
+        view.Items.Add(CreateMenuItem("Reset Plot", (_, _) => ResetPlot()));
+        view.Items.Add(new MenuFlyoutSeparator());
+        view.Items.Add(CreateToggleItem("Show Hidden Sensors", nameof(ViewModel.ShowHiddenSensors)));
+        view.Items.Add(CreateToggleItem("Show Plot", nameof(ViewModel.ShowPlot)));
+        MenuFlyoutSubItem columns = new() { Text = "Columns" };
+        columns.Items.Add(CreateToggleItem("Value", nameof(ViewModel.ShowValueColumn)));
+        columns.Items.Add(CreateToggleItem("Min", nameof(ViewModel.ShowMinColumn)));
+        columns.Items.Add(CreateToggleItem("Max", nameof(ViewModel.ShowMaxColumn)));
+        view.Items.Add(columns);
+        menuBar.Items.Add(view);
+
+        MenuBarItem options = new() { Title = "Options" };
+        options.Items.Add(CreateToggleItem("Start Minimized", nameof(ViewModel.StartMinimized)));
+        options.Items.Add(CreateToggleItem("Minimize To Tray", nameof(ViewModel.MinimizeToTray)));
+        options.Items.Add(CreateToggleItem("Minimize On Close", nameof(ViewModel.MinimizeOnClose)));
+        options.Items.Add(CreateToggleItem("Run On Windows Startup", nameof(ViewModel.RunOnStartup)));
+        options.Items.Add(new MenuFlyoutSeparator());
+        options.Items.Add(BuildRadioSubMenu("Temperature Unit", [
+            ("Celsius", TemperatureUnit.Celsius),
+            ("Fahrenheit", TemperatureUnit.Fahrenheit)
+        ], () => ViewModel.TemperatureUnit, value => ViewModel.TemperatureUnit = value));
+        options.Items.Add(BuildRadioSubMenu("Plot Location", [
+            ("Bottom", PlotLocation.Bottom),
+            ("Right", PlotLocation.Right)
+        ], () => ViewModel.PlotLocation, value => ViewModel.PlotLocation = value));
+        options.Items.Add(BuildRadioSubMenu("Theme", [
+            ("Auto", AppThemeMode.Auto),
+            ("Light", AppThemeMode.Light),
+            ("Dark", AppThemeMode.Dark),
+            ("Black", AppThemeMode.Black)
+        ], () => ViewModel.ThemeMode, value => ViewModel.ThemeMode = value));
+        options.Items.Add(BuildIndexedSubMenu("Stroke Thickness", [
+            ("1pt", 1),
+            ("2pt", 2),
+            ("3pt", 3),
+            ("4pt", 4)
+        ], () => (int)ViewModel.PlotStrokeThickness, value => ViewModel.PlotStrokeThickness = value));
+        options.Items.Add(new MenuFlyoutSeparator());
+        options.Items.Add(CreateToggleItem("Log Sensors", nameof(ViewModel.LogSensors)));
+        options.Items.Add(CreateToggleItem("Force Drive Wakeup", nameof(ViewModel.ForceDriveWakeup)));
+        options.Items.Add(CreateToggleItem("Throttle ATA Storage", nameof(ViewModel.ThrottleAtaUpdate)));
+        options.Items.Add(BuildRadioSubMenu("File Rotation Method", [
+            ("Per Session", LoggerFileRotation.PerSession),
+            ("Daily", LoggerFileRotation.Daily)
+        ], () => ViewModel.FileRotationMethod, value => ViewModel.FileRotationMethod = value));
+        options.Items.Add(BuildIndexedSubMenu("Update Interval", [
+            ("250ms", 0),
+            ("500ms", 1),
+            ("1s", 2),
+            ("2s", 3),
+            ("5s", 4),
+            ("10s", 5)
+        ], () => ViewModel.UpdateIntervalIndex, value => ViewModel.UpdateIntervalIndex = value));
+        options.Items.Add(BuildIndexedSubMenu("Logging Interval", [
+            ("1s", 0),
+            ("2s", 1),
+            ("5s", 2),
+            ("10s", 3),
+            ("30s", 4),
+            ("1min", 5),
+            ("2min", 6),
+            ("5min", 7),
+            ("10min", 8),
+            ("30min", 9),
+            ("1h", 10),
+            ("2h", 11),
+            ("6h", 12)
+        ], () => ViewModel.LoggingIntervalIndex, value => ViewModel.LoggingIntervalIndex = value));
+        options.Items.Add(BuildIndexedSubMenu("Sensor Values Time Window", [
+            ("30s", 0),
+            ("1min", 1),
+            ("2min", 2),
+            ("5min", 3),
+            ("10min", 4),
+            ("30min", 5),
+            ("1h", 6),
+            ("2h", 7),
+            ("6h", 8),
+            ("12h", 9),
+            ("24h", 10)
+        ], () => ViewModel.SensorValuesTimeWindowIndex, value => ViewModel.SensorValuesTimeWindowIndex = value));
+        options.Items.Add(new MenuFlyoutSeparator());
+        MenuFlyoutSubItem webServer = new() { Text = "Remote Web Server" };
+        ToggleMenuFlyoutItem runWebServer = CreateToggleItem("Run", nameof(ViewModel.RunWebServer));
+        runWebServer.IsEnabled = !ViewModel.IsWebServerUnavailable;
+        webServer.Items.Add(runWebServer);
+        MenuFlyoutItem interfacePort = CreateMenuItem("Interface / Port", async (_, _) => await ShowWebServerSettingsAsync());
+        interfacePort.IsEnabled = !ViewModel.IsWebServerUnavailable;
+        webServer.Items.Add(interfacePort);
+        MenuFlyoutItem authentication = CreateMenuItem("Authentication", async (_, _) => await ShowWebServerAuthenticationAsync());
+        authentication.IsEnabled = !ViewModel.IsWebServerUnavailable;
+        webServer.Items.Add(authentication);
+        options.Items.Add(webServer);
+        menuBar.Items.Add(options);
+
+        MenuBarItem help = new() { Title = "Help" };
+        help.Items.Add(CreateMenuItem("About", async (_, _) => await ShowAboutAsync()));
+        menuBar.Items.Add(help);
+
+        return menuBar;
+    }
+
+    private Grid BuildSensorPane()
+    {
+        Grid pane = new()
+        {
+            RowDefinitions =
+            {
+                new RowDefinition { Height = GridLength.Auto },
+                new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }
+            }
+        };
+
+        Grid header = CreateSensorRowGrid();
+        _sensorHeader = header;
+        header.Padding = new Thickness(8, 5, 8, 5);
+        header.Background = (Brush)Application.Current.Resources["SystemControlBackgroundChromeMediumLowBrush"];
+        header.Children.Add(CreateHeaderText("Sensor", 0, Visibility.Visible));
+        header.Children.Add(CreateHeaderText("Value", 1, ViewModel.ValueColumnVisibility, nameof(ViewModel.ValueColumnVisibility)));
+        header.Children.Add(CreateHeaderText("Min", 2, ViewModel.MinColumnVisibility, nameof(ViewModel.MinColumnVisibility)));
+        header.Children.Add(CreateHeaderText("Max", 3, ViewModel.MaxColumnVisibility, nameof(ViewModel.MaxColumnVisibility)));
+        pane.Children.Add(header);
+
+        Grid treeHost = new();
+        Grid.SetRow(treeHost, 1);
+        TreeView tree = new()
+        {
+            ItemTemplate = CreateTreeViewNodeContentTemplate(),
+            SelectionMode = TreeViewSelectionMode.Single
+        };
+        tree.SelectionChanged += SensorTree_SelectionChanged;
+        treeHost.Children.Add(tree);
+        pane.Children.Add(treeHost);
+
+        return pane;
+    }
+
+    private Grid BuildPlotPane()
+    {
+        Grid pane = new()
+        {
+            Padding = new Thickness(8),
+            BorderBrush = (Brush)Application.Current.Resources["SystemControlForegroundBaseLowBrush"],
+            BorderThickness = new Thickness(1, 0, 0, 0),
+            RowDefinitions =
+            {
+                new RowDefinition { Height = GridLength.Auto },
+                new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }
+            }
+        };
+
+        Grid toolbar = new()
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = GridLength.Auto }
+            }
+        };
+        toolbar.Children.Add(new TextBlock { Text = "Plot", FontWeight = new global::Windows.UI.Text.FontWeight { Weight = 600 }, VerticalAlignment = VerticalAlignment.Center });
+        Button reset = new() { Content = "Reset" };
+        reset.Click += (_, _) => ResetPlot();
+        Grid.SetColumn(reset, 1);
+        toolbar.Children.Add(reset);
+        pane.Children.Add(toolbar);
+
+        Canvas canvas = new()
+        {
+            MinHeight = 160,
+            Background = (Brush)Application.Current.Resources["SystemControlBackgroundAltHighBrush"]
+        };
+        canvas.SizeChanged += (_, _) => DrawPlot();
+        Grid.SetRow(canvas, 1);
+        pane.Children.Add(canvas);
+
+        return pane;
+    }
+
+    private void RootItems_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        RebuildSensorTree();
+    }
+
+    private async void UpdateTimer_Tick(DispatcherQueueTimer sender, object args)
+    {
+        if (_isUpdating)
+            return;
+
+        _isUpdating = true;
+        try
+        {
+            await ViewModel.UpdateAsync();
+            UpdateSensorColumnWidths();
+            DrawPlot();
+        }
+        catch (Exception ex)
+        {
+            _timer.Stop();
+            RecordRuntimeError("Sensor update failed", ex);
+        }
+        finally
+        {
+            _isUpdating = false;
+        }
+    }
+
+    private void RecordRuntimeError(string message, Exception exception)
+    {
+        string logPath = IOPath.Combine(AppContext.BaseDirectory, "LibreHardwareMonitor.Windows.WinUI.startup.log");
+        File.WriteAllText(logPath, exception.ToString());
+        ViewModel.SetStatusText($"{message}. See {IOPath.GetFileName(logPath)}.");
+    }
+
+    private void MainWindow_Closed(object sender, WindowEventArgs args)
+    {
+        _timer.Stop();
+        SaveWindowBounds();
+        ViewModel.Dispose();
+    }
+
+    private void RebuildSensorTree()
+    {
+        if (_sensorTree == null)
+            return;
+
+        _sensorRowGrids.Clear();
+        _sensorTree.RootNodes.Clear();
+        foreach (SensorTreeItemViewModel item in ViewModel.RootItems)
+        {
+            TreeViewNode? node = CreateTreeNode(item);
+            if (node != null)
+                _sensorTree.RootNodes.Add(node);
+        }
+
+        UpdateSensorColumnWidths();
+    }
+
+    private static DataTemplate CreateTreeViewNodeContentTemplate()
+    {
+        const string xaml = """
+            <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+                <ContentPresenter Content="{Binding Content}" />
+            </DataTemplate>
+            """;
+
+        return (DataTemplate)XamlReader.Load(xaml);
+    }
+
+    private TreeViewNode? CreateTreeNode(SensorTreeItemViewModel item)
+    {
+        if (item.RowVisibility == Visibility.Collapsed)
+            return null;
+
+        TreeViewNode node = new()
+        {
+            Content = CreateSensorRow(item),
+            IsExpanded = item.IsExpanded
+        };
+
+        foreach (SensorTreeItemViewModel child in item.Children)
+        {
+            TreeViewNode? childNode = CreateTreeNode(child);
+            if (childNode != null)
+                node.Children.Add(childNode);
+        }
+
+        return node;
+    }
+
+    private FrameworkElement CreateSensorRow(SensorTreeItemViewModel item)
+    {
+        Grid row = CreateSensorRowGrid();
+        _sensorRowGrids.Add(row);
+        row.DataContext = item;
+        row.Padding = new Thickness(0, 3, 0, 3);
+
+        StackPanel sensorCell = new() { Orientation = Orientation.Horizontal, Spacing = 6 };
+        CheckBox plotCheck = new() { MinWidth = 22 };
+        Bind(plotCheck, ToggleButton.IsCheckedProperty, item, nameof(SensorTreeItemViewModel.Plot), BindingMode.TwoWay);
+        Bind(plotCheck, UIElement.VisibilityProperty, item, nameof(SensorTreeItemViewModel.PlotCheckVisibility));
+        sensorCell.Children.Add(plotCheck);
+
+        FontIcon icon = new() { FontSize = 14 };
+        Bind(icon, FontIcon.GlyphProperty, item, nameof(SensorTreeItemViewModel.IconGlyph));
+        sensorCell.Children.Add(icon);
+
+        TextBlock name = new() { TextTrimming = TextTrimming.CharacterEllipsis };
+        Bind(name, TextBlock.TextProperty, item, nameof(SensorTreeItemViewModel.Text));
+        ToolTip toolTip = new();
+        Bind(toolTip, ContentControl.ContentProperty, item, nameof(SensorTreeItemViewModel.ToolTip));
+        ToolTipService.SetToolTip(name, toolTip);
+        sensorCell.Children.Add(name);
+
+        row.Children.Add(sensorCell);
+        row.Children.Add(CreateValueTextBlock(item, nameof(SensorTreeItemViewModel.Value), nameof(SensorTreeItemViewModel.ValueColumnVisibility), 1));
+        row.Children.Add(CreateValueTextBlock(item, nameof(SensorTreeItemViewModel.Min), nameof(SensorTreeItemViewModel.MinColumnVisibility), 2));
+        row.Children.Add(CreateValueTextBlock(item, nameof(SensorTreeItemViewModel.Max), nameof(SensorTreeItemViewModel.MaxColumnVisibility), 3));
+
+        row.ContextFlyout = BuildSensorContextMenu(item);
+        return row;
+    }
+
+    private MenuFlyout BuildSensorContextMenu(SensorTreeItemViewModel item)
+    {
+        MenuFlyout flyout = new();
+        if (item.Sensor?.Parameters.Count > 0)
+            flyout.Items.Add(CreateMenuItem("Parameters...", async (_, _) => await ShowParametersAsync(item)));
+
+        MenuFlyoutItem rename = CreateMenuItem("Rename", async (_, _) => await RenameNodeAsync(item));
+        rename.IsEnabled = item.CanRename;
+        flyout.Items.Add(rename);
+
+        ToggleMenuFlyoutItem plot = new() { Text = "Show in Plot", IsEnabled = item.Sensor != null };
+        Bind(plot, ToggleMenuFlyoutItem.IsCheckedProperty, item, nameof(SensorTreeItemViewModel.Plot), BindingMode.TwoWay);
+        flyout.Items.Add(plot);
+
+        MenuFlyoutItem hide = CreateMenuItem(item.IsVisible ? "Hide Sensor" : "Unhide Sensor", (_, _) =>
+        {
+            if (item.CanHide)
+            {
+                item.IsVisible = !item.IsVisible;
+                RebuildSensorTree();
+            }
+        });
+        hide.IsEnabled = item.CanHide;
+        flyout.Items.Add(hide);
+        flyout.Items.Add(new MenuFlyoutSeparator());
+        MenuFlyoutItem penColor = CreateMenuItem("Pen Color...", async (_, _) => await ShowPenColorAsync(item));
+        penColor.IsEnabled = item.Sensor != null;
+        flyout.Items.Add(penColor);
+        MenuFlyoutItem resetPenColor = CreateMenuItem("Reset Pen Color", (_, _) => ViewModel.SetSensorPenColor(item, null));
+        resetPenColor.IsEnabled = item.PenColor != null;
+        flyout.Items.Add(resetPenColor);
+
+        if (item.Sensor?.Control != null)
+        {
+            flyout.Items.Add(new MenuFlyoutSeparator());
+            flyout.Items.Add(BuildControlMenu(item.Sensor.Control));
+        }
+
+        flyout.Items.Add(new MenuFlyoutSeparator());
+        flyout.Items.Add(CreateMenuItem("Reset Min/Max", (_, _) => ViewModel.ResetMinMax()));
+        return flyout;
+    }
+
+    private static MenuFlyoutSubItem BuildControlMenu(IControl control)
+    {
+        MenuFlyoutSubItem controlItem = new() { Text = "Control" };
+        ToggleMenuFlyoutItem defaultItem = new() { Text = "Default", IsChecked = control.ControlMode == ControlMode.Default };
+        defaultItem.Click += (_, _) => control.SetDefault();
+        controlItem.Items.Add(defaultItem);
+
+        MenuFlyoutSubItem manual = new() { Text = "Manual" };
+        for (int value = 0; value <= 100; value += 5)
+        {
+            if (value > control.MaxSoftwareValue || value < control.MinSoftwareValue)
+                continue;
+
+            int controlValue = value;
+            ToggleMenuFlyoutItem item = new()
+            {
+                Text = $"{controlValue} %",
+                IsChecked = control.ControlMode == ControlMode.Software && Math.Abs(control.SoftwareValue - controlValue) < 0.1f
+            };
+            item.Click += (_, _) => control.SetSoftware(controlValue);
+            manual.Items.Add(item);
+        }
+
+        controlItem.Items.Add(manual);
+        return controlItem;
+    }
+
+    private async Task RenameNodeAsync(SensorTreeItemViewModel item)
+    {
+        if (!item.CanRename)
+            return;
+
+        TextBox nameTextBox = new() { Text = item.Text, SelectionStart = 0, SelectionLength = item.Text.Length };
+        ContentDialog dialog = new()
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = "Rename Sensor",
+            Content = nameTextBox,
+            PrimaryButtonText = "Save",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary
+        };
+
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+            item.Text = nameTextBox.Text.Trim();
+    }
+
+    private async Task ShowPenColorAsync(SensorTreeItemViewModel item)
+    {
+        if (item.Sensor == null)
+            return;
+
+        ColorPicker picker = new()
+        {
+            Color = item.PenColor ?? global::Windows.UI.Color.FromArgb(255, 0, 120, 212),
+            IsAlphaEnabled = false,
+            IsColorSliderVisible = true,
+            IsColorChannelTextInputVisible = true,
+            IsHexInputVisible = true
+        };
+
+        ContentDialog dialog = new()
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = "Pen Color",
+            Content = picker,
+            PrimaryButtonText = "Save",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary
+        };
+
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+            ViewModel.SetSensorPenColor(item, picker.Color);
+    }
+
+    private async Task ShowParametersAsync(SensorTreeItemViewModel item)
+    {
+        if (item.Sensor == null || item.Sensor.Parameters.Count == 0)
+            return;
+
+        StackPanel panel = new() { Spacing = 10 };
+        TextBlock caption = new()
+        {
+            Text = item.Sensor.Name,
+            FontWeight = new global::Windows.UI.Text.FontWeight { Weight = 600 },
+            TextWrapping = TextWrapping.Wrap
+        };
+        panel.Children.Add(caption);
+
+        ParameterEditorRow[] rows = item.Sensor.Parameters.Select(CreateParameterEditorRow).ToArray();
+        foreach (ParameterEditorRow row in rows)
+            panel.Children.Add(row.Container);
+
+        ContentDialog dialog = new()
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = "Parameters",
+            Content = new ScrollViewer { Content = panel, MaxHeight = 520 },
+            PrimaryButtonText = "OK",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary
+        };
+        dialog.PrimaryButtonClick += (sender, args) =>
+        {
+            foreach (ParameterEditorRow row in rows)
+            {
+                if (row.UseDefault.IsChecked == true)
+                    continue;
+
+                if (!float.TryParse(row.Value.Text, NumberStyles.Float, CultureInfo.CurrentCulture, out float _)
+                    && !float.TryParse(row.Value.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out float _))
+                {
+                    row.Value.Header = "Invalid value";
+                    args.Cancel = true;
+                    return;
+                }
+            }
+
+            foreach (ParameterEditorRow row in rows)
+            {
+                if (row.UseDefault.IsChecked == true)
+                    row.Parameter.IsDefault = true;
+                else if (float.TryParse(row.Value.Text, NumberStyles.Float, CultureInfo.CurrentCulture, out float currentCultureValue)
+                         || float.TryParse(row.Value.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out currentCultureValue))
+                    row.Parameter.Value = currentCultureValue;
+            }
+        };
+
+        await dialog.ShowAsync();
+    }
+
+    private static ParameterEditorRow CreateParameterEditorRow(IParameter parameter)
+    {
+        Grid grid = new()
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = new GridLength(120) }
+            },
+            RowDefinitions =
+            {
+                new RowDefinition { Height = GridLength.Auto },
+                new RowDefinition { Height = GridLength.Auto }
+            },
+            ColumnSpacing = 8
+        };
+
+        TextBlock name = new()
+        {
+            Text = parameter.Name,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextWrapping = TextWrapping.Wrap
+        };
+        grid.Children.Add(name);
+
+        CheckBox useDefault = new()
+        {
+            Content = "Default",
+            IsChecked = parameter.IsDefault,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Grid.SetColumn(useDefault, 1);
+        grid.Children.Add(useDefault);
+
+        TextBox value = new()
+        {
+            Text = parameter.Value.ToString(CultureInfo.CurrentCulture),
+            IsEnabled = !parameter.IsDefault
+        };
+        Grid.SetColumn(value, 2);
+        grid.Children.Add(value);
+
+        TextBlock description = new()
+        {
+            Text = parameter.Description,
+            Opacity = 0.72,
+            TextWrapping = TextWrapping.Wrap
+        };
+        Grid.SetRow(description, 1);
+        Grid.SetColumnSpan(description, 3);
+        grid.Children.Add(description);
+
+        useDefault.Checked += (_, _) => value.IsEnabled = false;
+        useDefault.Unchecked += (_, _) => value.IsEnabled = true;
+
+        return new ParameterEditorRow(parameter, grid, useDefault, value);
+    }
+
+    private async Task ShowWebServerSettingsAsync()
+    {
+        ComboBox interfaces = new() { MinWidth = 260 };
+        foreach (string address in GetLocalIPv4Addresses())
+            interfaces.Items.Add(address);
+        interfaces.Items.Add("0.0.0.0");
+        interfaces.SelectedItem = interfaces.Items.Contains(ViewModel.ListenerIp) ? ViewModel.ListenerIp : "0.0.0.0";
+
+        TextBox port = new()
+        {
+            Header = "Port",
+            Text = ViewModel.ListenerPort.ToString(CultureInfo.InvariantCulture),
+            InputScope = new InputScope { Names = { new InputScopeName(InputScopeNameValue.Number) } }
+        };
+
+        HyperlinkButton link = new()
+        {
+            Content = ViewModel.WebServerUrl,
+            NavigateUri = new Uri(ViewModel.WebServerUrl)
+        };
+
+        StackPanel content = new() { Spacing = 12 };
+        content.Children.Add(new TextBlock { Text = "Interface", FontWeight = new global::Windows.UI.Text.FontWeight { Weight = 600 } });
+        content.Children.Add(interfaces);
+        content.Children.Add(port);
+        content.Children.Add(link);
+
+        ContentDialog dialog = new()
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = "Remote Web Server",
+            Content = content,
+            PrimaryButtonText = "Save",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary
+        };
+
+        dialog.PrimaryButtonClick += (_, args) =>
+        {
+            if (!int.TryParse(port.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedPort) || parsedPort < 1 || parsedPort > 65535)
+            {
+                port.Header = "Port must be 1-65535";
+                args.Cancel = true;
+                return;
+            }
+
+            ViewModel.ListenerIp = interfaces.SelectedItem as string ?? "0.0.0.0";
+            ViewModel.ListenerPort = parsedPort;
+        };
+
+        await dialog.ShowAsync();
+    }
+
+    private async Task ShowWebServerAuthenticationAsync()
+    {
+        CheckBox enabled = new() { Content = "Enable HTTP authentication", IsChecked = ViewModel.AuthWebServer };
+        TextBox userName = new()
+        {
+            Header = "Username",
+            Text = ViewModel.AuthWebServerUserName,
+            IsEnabled = enabled.IsChecked == true
+        };
+        PasswordBox password = new()
+        {
+            Header = "New password",
+            IsEnabled = enabled.IsChecked == true
+        };
+
+        enabled.Checked += (_, _) => userName.IsEnabled = password.IsEnabled = true;
+        enabled.Unchecked += (_, _) => userName.IsEnabled = password.IsEnabled = false;
+
+        StackPanel content = new() { Spacing = 12 };
+        content.Children.Add(enabled);
+        content.Children.Add(userName);
+        content.Children.Add(password);
+
+        ContentDialog dialog = new()
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = "Remote Web Server Authentication",
+            Content = content,
+            PrimaryButtonText = "Save",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary
+        };
+        dialog.PrimaryButtonClick += (_, _) =>
+        {
+            ViewModel.AuthWebServer = enabled.IsChecked == true;
+            ViewModel.AuthWebServerUserName = userName.Text;
+            ViewModel.SetAuthPassword(password.Password);
+        };
+
+        await dialog.ShowAsync();
+    }
+
+    private void SensorTree_SelectionChanged(TreeView sender, TreeViewSelectionChangedEventArgs args)
+    {
+        if (args.AddedItems.Count == 0)
+        {
+            ViewModel.SelectedItem = null;
+            return;
+        }
+
+        object selected = args.AddedItems[0];
+        if (selected is TreeViewNode node && node.Content is FrameworkElement element)
+            ViewModel.SelectedItem = element.DataContext as SensorTreeItemViewModel;
+    }
+
+    private async Task SaveReportAsync()
+    {
+        FileSavePicker picker = new()
+        {
+            SuggestedFileName = "LibreHardwareMonitor.Report",
+            SuggestedStartLocation = PickerLocationId.DocumentsLibrary
+        };
+        picker.FileTypeChoices.Add("Text", [".txt"]);
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+
+        StorageFile? file = await picker.PickSaveFileAsync();
+        if (file == null)
+            return;
+
+        CachedFileManager.DeferUpdates(file);
+        await FileIO.WriteTextAsync(file, ViewModel.GetReport());
+        await CachedFileManager.CompleteUpdatesAsync(file);
+    }
+
+    private async Task ShowAboutAsync()
+    {
+        StackPanel content = new() { Spacing = 8 };
+        content.Children.Add(new TextBlock
+        {
+            Text = "Libre Hardware Monitor",
+            FontWeight = new global::Windows.UI.Text.FontWeight { Weight = 600 },
+            FontSize = 18
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = $"Version {typeof(MainWindow).Assembly.GetName().Version}",
+            TextWrapping = TextWrapping.Wrap
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = "A free, open source hardware monitoring application.",
+            TextWrapping = TextWrapping.Wrap
+        });
+        content.Children.Add(new HyperlinkButton
+        {
+            Content = "Project website",
+            NavigateUri = new Uri("https://github.com/LibreHardwareMonitor/LibreHardwareMonitor")
+        });
+        content.Children.Add(new HyperlinkButton
+        {
+            Content = "Mozilla Public License 2.0",
+            NavigateUri = new Uri("https://www.mozilla.org/MPL/2.0/")
+        });
+
+        ContentDialog dialog = new()
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = "Libre Hardware Monitor",
+            Content = content,
+            CloseButtonText = "OK"
+        };
+        await dialog.ShowAsync();
+    }
+
+    private void ResetPlot()
+    {
+        ViewModel.ResetPlot();
+        DrawPlot();
+    }
+
+    private void DrawPlot()
+    {
+        if (_plotCanvas == null)
+            return;
+
+        _plotCanvas.Children.Clear();
+        if (!ViewModel.ShowPlot || ViewModel.PlotSeries.Count == 0 || _plotCanvas.ActualWidth <= 4 || _plotCanvas.ActualHeight <= 4)
+            return;
+
+        double minTime = double.MaxValue;
+        double maxTime = double.MinValue;
+        double minValue = double.MaxValue;
+        double maxValue = double.MinValue;
+
+        foreach (PlotSeriesViewModel plotSeries in ViewModel.PlotSeries)
+        {
+            foreach (PlotPointViewModel point in plotSeries.Points)
+            {
+                double time = point.Timestamp.ToOADate();
+                minTime = Math.Min(minTime, time);
+                maxTime = Math.Max(maxTime, time);
+                minValue = Math.Min(minValue, point.Value);
+                maxValue = Math.Max(maxValue, point.Value);
+            }
+        }
+
+        if (minTime == double.MaxValue || minValue == double.MaxValue)
+            return;
+
+        if (Math.Abs(maxTime - minTime) < double.Epsilon)
+            maxTime = minTime + TimeSpan.FromSeconds(1).TotalDays;
+        if (Math.Abs(maxValue - minValue) < double.Epsilon)
+        {
+            maxValue += 1;
+            minValue -= 1;
+        }
+
+        double width = _plotCanvas.ActualWidth;
+        double height = _plotCanvas.ActualHeight;
+        DrawAxis(width, height);
+
+        foreach (PlotSeriesViewModel plotSeries in ViewModel.PlotSeries)
+        {
+            Polyline line = new()
+            {
+                Stroke = new SolidColorBrush(plotSeries.Color),
+                StrokeThickness = ViewModel.PlotStrokeThickness,
+                StrokeLineJoin = PenLineJoin.Round
+            };
+
+            foreach (PlotPointViewModel point in plotSeries.Points)
+            {
+                double x = (point.Timestamp.ToOADate() - minTime) / (maxTime - minTime) * width;
+                double y = height - ((point.Value - minValue) / (maxValue - minValue) * height);
+                line.Points.Add(new global::Windows.Foundation.Point(x, y));
+            }
+
+            _plotCanvas.Children.Add(line);
+        }
+    }
+
+    private void DrawAxis(double width, double height)
+    {
+        SolidColorBrush brush = new(Colors.Gray);
+        for (int i = 1; i < 4; i++)
+        {
+            double y = height * i / 4;
+            _plotCanvas.Children.Add(new Line
+            {
+                X1 = 0,
+                X2 = width,
+                Y1 = y,
+                Y2 = y,
+                Stroke = brush,
+                StrokeThickness = 0.5,
+                Opacity = 0.5
+            });
+        }
+    }
+
+    private void UpdatePlotLayout()
+    {
+        _contentGrid.ColumnDefinitions[1].Width = ViewModel.ShowPlot && ViewModel.PlotLocation == PlotLocation.Right ? new GridLength(320) : new GridLength(0);
+        _contentGrid.RowDefinitions[1].Height = ViewModel.ShowPlot && ViewModel.PlotLocation == PlotLocation.Bottom ? new GridLength(220) : new GridLength(0);
+
+        _plotPane.Visibility = ViewModel.ShowPlot ? Visibility.Visible : Visibility.Collapsed;
+        Grid.SetRow(_plotPane, ViewModel.PlotGridRow);
+        Grid.SetColumn(_plotPane, ViewModel.PlotGridColumn);
+        Grid.SetRowSpan(_plotPane, ViewModel.PlotGridRowSpan);
+        Grid.SetColumnSpan(_plotPane, ViewModel.PlotGridColumnSpan);
+        Grid.SetRowSpan(_sensorPane, ViewModel.SensorGridRowSpan);
+        Grid.SetColumnSpan(_sensorPane, ViewModel.SensorGridColumnSpan);
+        DrawPlot();
+    }
+
+    private void ApplyTheme()
+    {
+        _rootGrid.RequestedTheme = ViewModel.ThemeMode switch
+        {
+            AppThemeMode.Light => ElementTheme.Light,
+            AppThemeMode.Dark or AppThemeMode.Black => ElementTheme.Dark,
+            _ => ElementTheme.Default
+        };
+
+        _rootGrid.Background = ViewModel.ThemeMode switch
+        {
+            AppThemeMode.Black => new SolidColorBrush(Colors.Black),
+            AppThemeMode.Dark => new SolidColorBrush(global::Windows.UI.Color.FromArgb(255, 30, 30, 30)),
+            _ => (Brush)Application.Current.Resources["ApplicationPageBackgroundThemeBrush"]
+        };
+    }
+
+    private void RestoreWindowBounds()
+    {
+        int width = Math.Max(470, ViewModel.Settings.GetValue("mainForm.Width", 760));
+        int height = Math.Max(640, ViewModel.Settings.GetValue("mainForm.Height", 680));
+        _appWindow.Resize(new SizeInt32(width, height));
+
+        int x = ViewModel.Settings.GetValue("mainForm.Location.X", int.MinValue);
+        int y = ViewModel.Settings.GetValue("mainForm.Location.Y", int.MinValue);
+        if (x != int.MinValue && y != int.MinValue)
+            _appWindow.Move(new PointInt32(x, y));
+    }
+
+    private void MaximizeWindow()
+    {
+        if (_appWindow.Presenter is OverlappedPresenter presenter)
+            presenter.Maximize();
+    }
+
+    private void SaveWindowBounds()
+    {
+        ViewModel.Settings.SetValue("mainForm.Location.X", _appWindow.Position.X);
+        ViewModel.Settings.SetValue("mainForm.Location.Y", _appWindow.Position.Y);
+        ViewModel.Settings.SetValue("mainForm.Width", _appWindow.Size.Width);
+        ViewModel.Settings.SetValue("mainForm.Height", _appWindow.Size.Height);
+        ViewModel.Save();
+    }
+
+    private void UpdateSensorColumnWidths()
+    {
+        double sensorWidth = MeasureText("Sensor", true) + SensorColumnPadding;
+        double valueWidth = ViewModel.ShowValueColumn ? MeasureText("Value", true) + ValueColumnPadding : 0;
+        double minWidth = ViewModel.ShowMinColumn ? MeasureText("Min", true) + ValueColumnPadding : 0;
+        double maxWidth = ViewModel.ShowMaxColumn ? MeasureText("Max", true) + ValueColumnPadding : 0;
+
+        foreach (SensorTreeItemViewModel root in ViewModel.RootItems)
+            MeasureSensorColumnWidths(root, 0, ref sensorWidth, ref valueWidth, ref minWidth, ref maxWidth);
+
+        _sensorColumnWidths[0] = Math.Ceiling(sensorWidth);
+        _sensorColumnWidths[1] = Math.Ceiling(valueWidth);
+        _sensorColumnWidths[2] = Math.Ceiling(minWidth);
+        _sensorColumnWidths[3] = Math.Ceiling(maxWidth);
+
+        if (_sensorHeader != null)
+            ApplySensorColumnWidths(_sensorHeader);
+        foreach (Grid row in _sensorRowGrids)
+            ApplySensorColumnWidths(row);
+    }
+
+    private void MeasureSensorColumnWidths(
+        SensorTreeItemViewModel item,
+        int depth,
+        ref double sensorWidth,
+        ref double valueWidth,
+        ref double minWidth,
+        ref double maxWidth)
+    {
+        if (item.RowVisibility == Visibility.Visible)
+        {
+            sensorWidth = Math.Max(sensorWidth, MeasureText(item.Text) + SensorColumnPadding + depth * SensorTreeIndentWidth);
+            if (ViewModel.ShowValueColumn)
+                valueWidth = Math.Max(valueWidth, MeasureText(item.Value) + ValueColumnPadding);
+            if (ViewModel.ShowMinColumn)
+                minWidth = Math.Max(minWidth, MeasureText(item.Min) + ValueColumnPadding);
+            if (ViewModel.ShowMaxColumn)
+                maxWidth = Math.Max(maxWidth, MeasureText(item.Max) + ValueColumnPadding);
+        }
+
+        foreach (SensorTreeItemViewModel child in item.Children)
+            MeasureSensorColumnWidths(child, depth + 1, ref sensorWidth, ref valueWidth, ref minWidth, ref maxWidth);
+    }
+
+    private static double MeasureText(string text, bool bold = false)
+    {
+        TextBlock textBlock = new()
+        {
+            Text = text,
+            FontWeight = new global::Windows.UI.Text.FontWeight { Weight = bold ? (ushort)600 : (ushort)400 }
+        };
+        textBlock.Measure(new global::Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+        return textBlock.DesiredSize.Width;
+    }
+
+    private void ApplySensorColumnWidths(Grid grid)
+    {
+        for (int i = 0; i < grid.ColumnDefinitions.Count && i < _sensorColumnWidths.Length; i++)
+            grid.ColumnDefinitions[i].Width = new GridLength(_sensorColumnWidths[i]);
+    }
+
+    private Grid CreateSensorRowGrid()
+    {
+        Grid grid = new()
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(),
+                new ColumnDefinition(),
+                new ColumnDefinition(),
+                new ColumnDefinition()
+            }
+        };
+
+        ApplySensorColumnWidths(grid);
+        return grid;
+    }
+
+    private TextBlock CreateHeaderText(string text, int column, Visibility visibility, string? bindingPath = null)
+    {
+        TextBlock textBlock = new()
+        {
+            Text = text,
+            FontWeight = new global::Windows.UI.Text.FontWeight { Weight = 600 },
+            Visibility = visibility
+        };
+        if (bindingPath != null)
+            Bind(textBlock, UIElement.VisibilityProperty, ViewModel, bindingPath);
+        Grid.SetColumn(textBlock, column);
+        return textBlock;
+    }
+
+    private static TextBlock CreateValueTextBlock(SensorTreeItemViewModel item, string textPath, string visibilityPath, int column)
+    {
+        TextBlock textBlock = new() { TextTrimming = TextTrimming.CharacterEllipsis };
+        Bind(textBlock, TextBlock.TextProperty, item, textPath);
+        Bind(textBlock, UIElement.VisibilityProperty, item, visibilityPath);
+        Grid.SetColumn(textBlock, column);
+        return textBlock;
+    }
+
+    private static MenuFlyoutSubItem BuildIndexedSubMenu(string text, (string Label, int Value)[] items, Func<int> getter, Action<int> setter)
+    {
+        return BuildRadioSubMenu(text, items, getter, setter);
+    }
+
+    private static MenuFlyoutSubItem BuildRadioSubMenu<T>(string text, (string Label, T Value)[] items, Func<T> getter, Action<T> setter)
+    {
+        MenuFlyoutSubItem subItem = new() { Text = text };
+        foreach ((string label, T value) in items)
+        {
+            ToggleMenuFlyoutItem item = new()
+            {
+                Text = label,
+                IsChecked = Equals(getter(), value)
+            };
+            item.Click += (_, _) =>
+            {
+                setter(value);
+                foreach (ToggleMenuFlyoutItem sibling in subItem.Items.OfType<ToggleMenuFlyoutItem>())
+                    sibling.IsChecked = Equals(sibling.Tag, value);
+            };
+            item.Tag = value;
+            subItem.Items.Add(item);
+        }
+
+        return subItem;
+    }
+
+    private static MenuFlyoutItem CreateMenuItem(string text, RoutedEventHandler handler)
+    {
+        MenuFlyoutItem item = new() { Text = text };
+        item.Click += handler;
+        return item;
+    }
+
+    private ToggleMenuFlyoutItem CreateToggleItem(string text, string bindingPath)
+    {
+        ToggleMenuFlyoutItem item = new() { Text = text };
+        Bind(item, ToggleMenuFlyoutItem.IsCheckedProperty, ViewModel, bindingPath, BindingMode.TwoWay);
+        return item;
+    }
+
+    private static string[] GetLocalIPv4Addresses()
+    {
+        try
+        {
+            return Dns.GetHostEntry(Dns.GetHostName())
+                .AddressList
+                .Where(address => address.AddressFamily == AddressFamily.InterNetwork)
+                .Select(address => address.ToString())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private sealed record ParameterEditorRow(IParameter Parameter, Grid Container, CheckBox UseDefault, TextBox Value);
+
+    private static void Bind(DependencyObject target, DependencyProperty property, object source, string path, BindingMode mode = BindingMode.OneWay)
+    {
+        BindingOperations.SetBinding(target, property, new Binding
+        {
+            Source = source,
+            Path = new PropertyPath(path),
+            Mode = mode,
+            UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
+        });
+    }
+}
