@@ -676,7 +676,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         try
         {
             StatusText = "Initializing hardware sensors...";
-            await Task.Run(() => _hardwareMonitor.Open(raiseTreeRebuilt: false));
+            await _hardwareMonitor.OpenAsync(raiseTreeRebuilt: false);
             UpdateRoot();
             ApplySensorValuesTimeWindow();
             StartWebServerFromSettings();

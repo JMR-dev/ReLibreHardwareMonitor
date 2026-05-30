@@ -520,12 +520,46 @@ public class Computer : IComputer
         if (_open)
             return;
 
+        OpenInternal(CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Asynchronously performs the same work as <see cref="Open()" />. The required global setup (SMBIOS, mutexes and
+    /// <see cref="OpCode" />) and hardware group discovery run on a background thread; discovery order and behavior
+    /// match <see cref="Open()" />.
+    /// </summary>
+    /// <returns>A task that completes once all enabled hardware groups have been discovered.</returns>
+    public Task OpenAsync()
+    {
+        return OpenAsync(CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Asynchronously performs the same work as <see cref="Open()" />, observing the supplied <paramref name="cancellationToken" />
+    /// between initialization phases.
+    /// </summary>
+    /// <param name="cancellationToken">Token used to cancel initialization before it completes.</param>
+    /// <returns>A task that completes once all enabled hardware groups have been discovered.</returns>
+    public Task OpenAsync(CancellationToken cancellationToken)
+    {
+        if (_open)
+            return Task.CompletedTask;
+
+        return Task.Run(() => OpenInternal(cancellationToken), cancellationToken);
+    }
+
+    private void OpenInternal(CancellationToken cancellationToken)
+    {
+        if (_open)
+            return;
+
         StartDeferredGroupRun();
 
         try
         {
             using HardwareStartupTrace startupTrace = HardwareStartupTrace.Create(_settings);
 
+            cancellationToken.ThrowIfCancellationRequested();
             _smbios = Measure(startupTrace, "SMBios", () => new SMBios());
 
             if (Software.OperatingSystem.IsWindows8OrGreater)
@@ -533,9 +567,10 @@ public class Computer : IComputer
             else
                 startupTrace?.Skip("Mutexes.Open", "Operating system is older than Windows 8.");
 
+            cancellationToken.ThrowIfCancellationRequested();
             Measure(startupTrace, "OpCode.Open", OpCode.Open);
 
-            AddGroups(startupTrace);
+            AddGroups(startupTrace, cancellationToken);
 
             _open = true;
         }
@@ -546,17 +581,21 @@ public class Computer : IComputer
         }
     }
 
-    private void AddGroups(HardwareStartupTrace startupTrace)
+    private void AddGroups(HardwareStartupTrace startupTrace, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (_motherboardEnabled)
             AddMeasuredGroup(startupTrace, "MotherboardGroup", () => new MotherboardGroup(_smbios, _settings));
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_cpuEnabled)
             AddMeasuredGroup(startupTrace, "CpuGroup", () => new CpuGroup(_settings, startupTrace));
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_memoryEnabled)
             AddMeasuredGroup(startupTrace, "MemoryGroup", () => new MemoryGroup(_settings, startupTrace));
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_gpuEnabled)
         {
             AddMeasuredGroup(startupTrace, "AmdGpuGroup", () => new AmdGpuGroup(_settings));
@@ -571,9 +610,11 @@ public class Computer : IComputer
                 AddMeasuredGroup(startupTrace, "IntelGpuGroup", () => new IntelGpuGroup(GetIntelCpus(), _settings));
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_powerMonitorEnabled)
             AddMeasuredGroup(startupTrace, "PowerMonitorGroup", () => new PowerMonitorGroup(_settings));
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_controllerEnabled)
         {
             AddMeasuredGroup(startupTrace, "TBalancerGroup", () => new TBalancerGroup(_settings));
@@ -586,6 +627,7 @@ public class Computer : IComputer
             AddMeasuredGroup(startupTrace, "MsiGroup", () => new MsiGroup(_settings));
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_storageEnabled)
             AddMeasuredGroup(startupTrace,
                              "StorageGroup",
@@ -594,6 +636,7 @@ public class Computer : IComputer
                              DeferStorageDetectionSetting,
                              DeferStorageDetectionEnvironmentVariable);
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_networkEnabled)
             AddMeasuredGroup(startupTrace,
                              "NetworkGroup",
@@ -602,12 +645,14 @@ public class Computer : IComputer
                              DeferNetworkDetectionSetting,
                              DeferNetworkDetectionEnvironmentVariable);
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_psuEnabled)
         {
             AddMeasuredGroup(startupTrace, "CorsairPsuGroup", () => new CorsairPsuGroup(_settings));
             AddMeasuredGroup(startupTrace, "MsiPsuGroup", () => new MsiPsuGroup(_settings));
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_batteryEnabled)
             AddMeasuredGroup(startupTrace, "BatteryGroup", () => new BatteryGroup(_settings));
     }
@@ -827,7 +872,7 @@ public class Computer : IComputer
 
         StartDeferredGroupRun();
         RemoveGroups();
-        AddGroups(null);
+        AddGroups(null, CancellationToken.None);
     }
 
     private void RemoveGroups()

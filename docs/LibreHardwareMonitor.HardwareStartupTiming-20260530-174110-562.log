@@ -1,0 +1,40 @@
+Libre Hardware Monitor hardware startup timing
+Timestamp: 2026-05-30 22:41:10Z
+Total elapsed: 239.124 ms
+
+Phase,ElapsedMs,HardwareCount,Status,Detail
+SMBios,3.084,,OK,
+Mutexes.Open,1.752,,OK,
+OpCode.Open,1.407,,OK,
+MotherboardGroup,36.351,1,OK,
+CpuGroup.GetProcessorThreads,9.124,,OK,"1 processor(s), 32 thread(s)"
+CpuGroup.Processor0.GroupThreadsByCore,0.508,,OK,"24 core(s), 32 thread(s)"
+GenericCpu.CpuLoad,0.700,,OK,Available
+GenericCpu.EstimateTimeStampCounterFrequency,25.262,,OK,
+IntelCpu.CreateMsrModule,0.265,,OK,
+IntelCpu.InitialUpdate,0.000,,SKIPPED,Deferred until first regular update.
+CpuGroup.Processor0.IntelCpu,37.206,,OK,"13th Gen Intel Core i9-13980HX, 139 sensor(s)"
+CpuGroup,47.798,1,OK,
+MemoryGroup.Driver.Configure,0.833,,OK,
+MemoryGroup.VirtualMemory,0.201,,OK,
+MemoryGroup.TotalMemory,0.160,,OK,
+MemoryGroup.Driver.LoadDriver,0.123,,OK,Loaded
+MemoryGroup.DimmDetection,0.000,,SKIPPED,Deferred to background.
+MemoryGroup,2.577,2,OK,
+AmdGpuGroup,1.564,0,OK,
+NvidiaGroup,0.000,,SKIPPED,Deferred to background.
+IntelGpuGroup,76.887,1,OK,
+PowerMonitorGroup,1.637,0,OK,
+TBalancerGroup,1.902,0,OK,
+HeatmasterGroup,0.820,0,OK,
+AquaComputerGroup,49.511,0,OK,
+AeroCoolGroup,1.070,0,OK,
+NzxtGroup,1.038,0,OK,
+RazerGroup,0.809,0,OK,
+ArcticGroup,0.603,0,OK,
+MsiGroup,1.227,0,OK,
+StorageGroup,0.000,,SKIPPED,Deferred to background.
+NetworkGroup,0.000,,SKIPPED,Deferred to background.
+CorsairPsuGroup,1.152,0,OK,
+MsiPsuGroup,0.953,0,OK,
+BatteryGroup,2.743,1,OK,

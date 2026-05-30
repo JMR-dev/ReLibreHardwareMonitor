@@ -125,6 +125,16 @@ public sealed class HardwareMonitorService : IDisposable
         RebuildTree(raiseTreeRebuilt);
     }
 
+    public async Task OpenAsync(bool raiseTreeRebuilt = true, CancellationToken cancellationToken = default)
+    {
+        if (_isOpen)
+            return;
+
+        await Computer.OpenAsync(cancellationToken).ConfigureAwait(false);
+        _isOpen = true;
+        RebuildTree(raiseTreeRebuilt);
+    }
+
     public void Reset()
     {
         if (_isOpen)
