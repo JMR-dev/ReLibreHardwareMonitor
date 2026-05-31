@@ -116,6 +116,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         _remoteWebServer = new RemoteWebServer(
             () => RootItems.FirstOrDefault(),
             _hardwareMonitor.Computer,
+            _hardwareMonitor.SensorReadLock,
             settings.GetValue("listenerIp", "?"),
             settings.GetValue("listenerPort", 8085),
             settings.GetValue("authenticationEnabled", false),
@@ -958,9 +959,11 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
                 _plotSeriesByIdentifier[identifier] = series;
                 PlotSeries.Add(series);
             }
-            else
+            else if (sensorItem.PenColor.HasValue)
             {
-                series.Color = GetPlotColor(sensorItem);
+                // Only honor an explicit user pen color for an existing series; keep the auto-assigned color stable.
+                // (Recomputing it from the live series count made existing lines shift/collide colors every tick.)
+                series.Color = sensorItem.PenColor.Value;
             }
 
             series.Points.Add(new PlotPointViewModel(now, value.Value));

@@ -70,6 +70,8 @@ public sealed class MainWindow : Window
     private bool _isUpdating;
     private bool _initialWindowStateApplied;
     private bool _isClosingForExit;
+    private bool _isShuttingDown;
+    private bool _runtimeErrorLogged;
     private bool _isMainWindowHidden;
     private bool _isMonitoringStarted;
     private bool _startupCompletionRequested;
@@ -635,13 +637,18 @@ public sealed class MainWindow : Window
 
     private async void UpdateTimer_Tick(DispatcherQueueTimer sender, object args)
     {
-        if (_isUpdating)
+        if (_isUpdating || _isShuttingDown)
             return;
 
         _isUpdating = true;
         try
         {
             await ViewModel.UpdateAsync();
+
+            // The window may have been closed (and the view model/computer disposed) while we awaited the update.
+            if (_isShuttingDown)
+                return;
+
             UpdateSensorColumnWidths();
             _trayIconService.Update();
             _gadgetWindow?.UpdateSensors(ViewModel.GetGadgetSensorItems());
@@ -649,7 +656,7 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
-            _timer.Stop();
+            // A transient update failure must not permanently freeze the UI: keep the timer running and just record it.
             RecordRuntimeError("Sensor update failed", ex);
         }
         finally
@@ -662,8 +669,24 @@ public sealed class MainWindow : Window
     {
         _startupTrace?.Mark("MainWindow.RuntimeError", $"{message}: {exception.GetType().FullName}: {exception.Message}");
         _startupTrace?.Flush();
-        string logPath = IOPath.Combine(AppContext.BaseDirectory, "LibreHardwareMonitor.Windows.WinUI.startup.log");
-        File.WriteAllText(logPath, exception.ToString());
+
+        // Use a dedicated runtime log (not the startup log that App.xaml.cs appends to) and write it only once, so a
+        // recurring per-tick failure neither clobbers the startup diagnostics nor grows the file without bound.
+        string logPath = IOPath.Combine(AppContext.BaseDirectory, "LibreHardwareMonitor.Windows.WinUI.runtime.log");
+        if (!_runtimeErrorLogged)
+        {
+            try
+            {
+                File.WriteAllText(logPath, exception.ToString());
+            }
+            catch
+            {
+                // Never let diagnostic logging throw out of the update loop.
+            }
+
+            _runtimeErrorLogged = true;
+        }
+
         ViewModel.SetStatusText($"{message}. See {IOPath.GetFileName(logPath)}.");
     }
 
@@ -682,6 +705,7 @@ public sealed class MainWindow : Window
             return;
         }
 
+        _isShuttingDown = true;
         _timer.Stop();
         _deviceColumnWidthSettleTimer.Stop();
         _trayIconService.Dispose();

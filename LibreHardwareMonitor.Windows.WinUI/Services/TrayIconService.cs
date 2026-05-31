@@ -202,7 +202,14 @@ public sealed class TrayIconService : IDisposable
     private IntPtr WindowSubclassProc(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam, nuint subclassId, nuint refData)
     {
         if (message == CallbackMessage)
-            HandleTrayCallback((uint)wParam.ToInt64(), (uint)lParam.ToInt64());
+        {
+            // With NOTIFYICON_VERSION_4 the event is packed into lParam: LOWORD = the mouse/keyboard message,
+            // HIWORD = the icon id. (wParam carries the cursor coordinates, which we don't use.)
+            uint packed = unchecked((uint)lParam.ToInt64());
+            uint mouseMessage = packed & 0xFFFF;
+            uint iconId = (packed >> 16) & 0xFFFF;
+            HandleTrayCallback(iconId, mouseMessage);
+        }
 
         return DefSubclassProc(hWnd, message, wParam, lParam);
     }
@@ -360,7 +367,7 @@ public sealed class TrayIconService : IDisposable
             BitmapInfo bitmapInfo = BitmapInfo.Create(IconSize, IconSize);
             bitmap = CreateDIBSection(hdc, ref bitmapInfo, 0, out _, IntPtr.Zero, 0);
             if (bitmap == IntPtr.Zero)
-                return _mainIconHandle;
+                return IntPtr.Zero; // never return the shared main icon: callers DestroyIcon() the returned handle
 
             oldBitmap = SelectObject(memoryDc, bitmap);
             WinUIColor color = GetSensorTrayColor(sensor);

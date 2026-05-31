@@ -15,7 +15,10 @@ namespace LibreHardwareMonitor.Windows.WinUI.Services;
 
 public sealed class AppSettings : ISettings
 {
-    private readonly IDictionary<string, string> _settings = new Dictionary<string, string>();
+    // ISettings is read and written concurrently from background hardware-discovery threads (deferred group/sensor
+    // construction) as well as the UI thread, so every access to the backing dictionary is guarded by _lock.
+    private readonly Dictionary<string, string> _settings = new();
+    private readonly object _lock = new();
 
     private AppSettings(string fileName)
     {
@@ -35,91 +38,107 @@ public sealed class AppSettings : ISettings
 
     public bool Contains(string name)
     {
-        return _settings.ContainsKey(name);
+        lock (_lock)
+            return _settings.ContainsKey(name);
     }
 
     public string GetValue(string name, string value)
     {
-        return _settings.TryGetValue(name, out string? result) ? result : value;
+        lock (_lock)
+            return _settings.TryGetValue(name, out string? result) ? result : value;
     }
 
     public int GetValue(string name, int value)
     {
-        return _settings.TryGetValue(name, out string? result) && int.TryParse(result, out int parsedValue)
-            ? parsedValue
-            : value;
+        lock (_lock)
+            return _settings.TryGetValue(name, out string? result) && int.TryParse(result, out int parsedValue)
+                ? parsedValue
+                : value;
     }
 
     public float GetValue(string name, float value)
     {
-        return _settings.TryGetValue(name, out string? result)
-               && float.TryParse(result, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedValue)
-            ? parsedValue
-            : value;
+        lock (_lock)
+            return _settings.TryGetValue(name, out string? result)
+                   && float.TryParse(result, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedValue)
+                ? parsedValue
+                : value;
     }
 
     public double GetValue(string name, double value)
     {
-        return _settings.TryGetValue(name, out string? result)
-               && double.TryParse(result, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedValue)
-            ? parsedValue
-            : value;
+        lock (_lock)
+            return _settings.TryGetValue(name, out string? result)
+                   && double.TryParse(result, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedValue)
+                ? parsedValue
+                : value;
     }
 
     public bool GetValue(string name, bool value)
     {
-        return _settings.TryGetValue(name, out string? result) ? result == "true" : value;
+        lock (_lock)
+            return _settings.TryGetValue(name, out string? result) ? result == "true" : value;
     }
 
     public Color GetValue(string name, Color value)
     {
-        if (_settings.TryGetValue(name, out string? result)
-            && uint.TryParse(result, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint parsedValue))
+        lock (_lock)
         {
-            return Color.FromArgb(
-                (byte)((parsedValue >> 24) & 0xff),
-                (byte)((parsedValue >> 16) & 0xff),
-                (byte)((parsedValue >> 8) & 0xff),
-                (byte)(parsedValue & 0xff));
-        }
+            if (_settings.TryGetValue(name, out string? result)
+                && uint.TryParse(result, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint parsedValue))
+            {
+                return Color.FromArgb(
+                    (byte)((parsedValue >> 24) & 0xff),
+                    (byte)((parsedValue >> 16) & 0xff),
+                    (byte)((parsedValue >> 8) & 0xff),
+                    (byte)(parsedValue & 0xff));
+            }
 
-        return value;
+            return value;
+        }
     }
 
     public void SetValue(string name, string value)
     {
-        _settings[name] = value;
+        lock (_lock)
+            _settings[name] = value;
     }
 
     public void SetValue(string name, int value)
     {
-        _settings[name] = value.ToString(CultureInfo.InvariantCulture);
+        lock (_lock)
+            _settings[name] = value.ToString(CultureInfo.InvariantCulture);
     }
 
     public void SetValue(string name, float value)
     {
-        _settings[name] = value.ToString(CultureInfo.InvariantCulture);
+        lock (_lock)
+            _settings[name] = value.ToString(CultureInfo.InvariantCulture);
     }
 
     public void SetValue(string name, double value)
     {
-        _settings[name] = value.ToString(CultureInfo.InvariantCulture);
+        lock (_lock)
+            _settings[name] = value.ToString(CultureInfo.InvariantCulture);
     }
 
     public void SetValue(string name, bool value)
     {
-        _settings[name] = value ? "true" : "false";
+        lock (_lock)
+            _settings[name] = value ? "true" : "false";
     }
 
     public void SetValue(string name, Color value)
     {
         uint argb = (uint)((value.A << 24) | (value.R << 16) | (value.G << 8) | value.B);
-        _settings[name] = argb.ToString("X8", CultureInfo.InvariantCulture);
+        lock (_lock)
+            _settings[name] = argb.ToString("X8", CultureInfo.InvariantCulture);
     }
 
     public void Remove(string name)
     {
-        _settings.Remove(name);
+        lock (_lock)
+            _settings.Remove(name);
     }
 
     public void Load()
@@ -149,7 +168,10 @@ public sealed class AppSettings : ISettings
                 XmlAttribute? keyAttribute = child.Attributes?["key"];
                 XmlAttribute? valueAttribute = child.Attributes?["value"];
                 if (keyAttribute?.Value != null && valueAttribute?.Value != null)
-                    _settings[keyAttribute.Value] = valueAttribute.Value;
+                {
+                    lock (_lock)
+                        _settings[keyAttribute.Value] = valueAttribute.Value;
+                }
             }
         }
     }
@@ -165,7 +187,11 @@ public sealed class AppSettings : ISettings
         XmlElement appSettings = doc.CreateElement("appSettings");
         configuration.AppendChild(appSettings);
 
-        foreach (KeyValuePair<string, string> setting in _settings)
+        List<KeyValuePair<string, string>> snapshot;
+        lock (_lock)
+            snapshot = new List<KeyValuePair<string, string>>(_settings);
+
+        foreach (KeyValuePair<string, string> setting in snapshot)
         {
             XmlElement add = doc.CreateElement("add");
             add.SetAttribute("key", setting.Key);

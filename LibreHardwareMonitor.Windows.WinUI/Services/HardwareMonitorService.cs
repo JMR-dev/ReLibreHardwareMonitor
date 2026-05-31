@@ -29,6 +29,7 @@ public sealed class HardwareMonitorService : IDisposable
     private readonly UpdateVisitor _updateVisitor = new();
     private bool _isOpen;
     private int _treeRebuildQueued;
+    private volatile bool _treeRebuildDirty;
 
     public HardwareMonitorService(AppSettings settings)
     {
@@ -43,6 +44,12 @@ public sealed class HardwareMonitorService : IDisposable
     public event EventHandler? TreeRebuilt;
 
     public Computer Computer { get; }
+
+    /// <summary>
+    /// Lock guarding access to live sensor collections (values and active-sensor sets). Held by <see cref="UpdateAsync" />
+    /// while sensors are updated; other readers (tree rebuild, the remote web server) take it to read consistently.
+    /// </summary>
+    public object SensorReadLock => _updateLock;
 
     public AppSettings Settings { get; }
 
@@ -177,8 +184,14 @@ public sealed class HardwareMonitorService : IDisposable
     public void RebuildTree(bool raiseTreeRebuilt = true)
     {
         SensorTreeItemViewModel root = SensorTreeItemViewModel.CreateRoot(Environment.MachineName);
-        foreach (IHardware hardware in Computer.Hardware.OrderBy(hardware => hardware.HardwareType).ThenBy(hardware => hardware.Name, StringComparer.OrdinalIgnoreCase))
-            root.Children.Add(SensorTreeItemViewModel.FromHardware(hardware, Settings));
+
+        // Building the tree reads each hardware's live sensor set (a HashSet). Hold the update lock so it cannot run
+        // concurrently with UpdateAsync()'s Computer.Accept, which mutates that set via ActivateSensor on another thread.
+        lock (_updateLock)
+        {
+            foreach (IHardware hardware in Computer.Hardware.OrderBy(hardware => hardware.HardwareType).ThenBy(hardware => hardware.Name, StringComparer.OrdinalIgnoreCase))
+                root.Children.Add(SensorTreeItemViewModel.FromHardware(hardware, Settings));
+        }
 
         Root = root;
         if (raiseTreeRebuilt)
@@ -187,6 +200,9 @@ public sealed class HardwareMonitorService : IDisposable
 
     public void Dispose()
     {
+        // Clear before closing so any tree-rebuild task still pending its delay bails instead of rebuilding from a
+        // half-closed Computer.
+        _isOpen = false;
         Computer.HardwareAdded -= HardwareChanged;
         Computer.HardwareRemoved -= HardwareChanged;
         Computer.Close();
@@ -247,12 +263,18 @@ public sealed class HardwareMonitorService : IDisposable
 
     private void HardwareChanged(IHardware hardware)
     {
+        // Storage discovery is deferred, so drives usually appear after ForceDriveWakeup was applied at startup (against
+        // an empty hardware list). Apply the current setting to each newly discovered drive so it actually takes effect.
+        if (hardware is StorageDevice storageDevice)
+            storageDevice.ForceWakeup = Settings.GetValue("forceDriveWakeupItem", false);
+
         if (_isOpen)
             QueueTreeRebuild();
     }
 
     private void QueueTreeRebuild()
     {
+        _treeRebuildDirty = true;
         if (Interlocked.Exchange(ref _treeRebuildQueued, 1) == 1)
             return;
 
@@ -262,8 +284,14 @@ public sealed class HardwareMonitorService : IDisposable
             {
                 await Task.Delay(100).ConfigureAwait(false);
 
-                if (_isOpen)
-                    RebuildTree();
+                // Rebuild until no change has arrived since the last rebuild began, so a HardwareAdded/Removed that lands
+                // while a rebuild is in flight is not coalesced away and lost.
+                while (_treeRebuildDirty)
+                {
+                    _treeRebuildDirty = false;
+                    if (_isOpen)
+                        RebuildTree();
+                }
             }
             catch (Exception ex)
             {
@@ -272,6 +300,10 @@ public sealed class HardwareMonitorService : IDisposable
             finally
             {
                 Interlocked.Exchange(ref _treeRebuildQueued, 0);
+
+                // A change may have slipped in between the loop's exit and clearing the flag; re-queue so it is honored.
+                if (_treeRebuildDirty)
+                    QueueTreeRebuild();
             }
         });
     }

@@ -25,6 +25,7 @@ namespace LibreHardwareMonitor.Windows.WinUI.Services;
 public sealed class RemoteWebServer : IDisposable
 {
     private readonly IComputer _computer;
+    private readonly object _sensorReadLock;
     private readonly Func<SensorTreeItemViewModel?> _rootProvider;
     private readonly Version _version = typeof(RemoteWebServer).Assembly.GetName().Version ?? new Version(0, 0);
     private CancellationTokenSource? _cts;
@@ -34,6 +35,7 @@ public sealed class RemoteWebServer : IDisposable
     public RemoteWebServer(
         Func<SensorTreeItemViewModel?> rootProvider,
         IComputer computer,
+        object sensorReadLock,
         string listenerIp,
         int listenerPort,
         bool authEnabled,
@@ -42,6 +44,7 @@ public sealed class RemoteWebServer : IDisposable
     {
         _rootProvider = rootProvider;
         _computer = computer;
+        _sensorReadLock = sensorReadLock;
         ListenerIp = listenerIp;
         ListenerPort = listenerPort;
         AuthEnabled = authEnabled;
@@ -196,7 +199,10 @@ public sealed class RemoteWebServer : IDisposable
                 return;
             }
 
-            string requestedFile = request.RawUrl?.TrimStart('/') ?? "";
+            // Match on the path component only (AbsolutePath excludes the query string) and compare endpoints exactly.
+            // Prefix matching previously let any static asset whose name starts with an endpoint name (e.g.
+            // "metrics.html", "sensor-icons.css") be hijacked by the API handlers.
+            string requestedFile = (request.Url?.AbsolutePath ?? request.RawUrl ?? "").TrimStart('/');
             if (requestedFile.Length == 0)
                 requestedFile = "index.html";
 
@@ -206,13 +212,13 @@ public sealed class RemoteWebServer : IDisposable
                 return;
             }
 
-            if (requestedFile.StartsWith("metrics", StringComparison.OrdinalIgnoreCase))
+            if (requestedFile.Equals("metrics", StringComparison.OrdinalIgnoreCase))
             {
                 await SendPrometheusAsync(context.Response, request);
                 return;
             }
 
-            if (requestedFile.StartsWith("Sensor", StringComparison.OrdinalIgnoreCase))
+            if (requestedFile.Equals("Sensor", StringComparison.OrdinalIgnoreCase))
             {
                 Dictionary<string, object?> result = [];
                 HandleSensorRequest(request, result);
@@ -220,7 +226,7 @@ public sealed class RemoteWebServer : IDisposable
                 return;
             }
 
-            if (requestedFile.StartsWith("ResetAllMinMax", StringComparison.OrdinalIgnoreCase))
+            if (requestedFile.Equals("ResetAllMinMax", StringComparison.OrdinalIgnoreCase))
             {
                 _computer.Accept(new SensorVisitor(sensor =>
                 {
@@ -427,7 +433,12 @@ public sealed class RemoteWebServer : IDisposable
     private async Task SendPrometheusAsync(HttpListenerResponse response, HttpListenerRequest request)
     {
         Dictionary<string, int> settings = ParsePrometheusSettings(request);
-        string content = GeneratePrometheusResponse(_rootProvider(), settings);
+
+        // Serialize against the sensor update loop: GeneratePrometheusResponse enumerates each sensor's live Values ring
+        // buffer, which the update thread mutates concurrently (an unsynchronized enumeration would throw).
+        string content;
+        lock (_sensorReadLock)
+            content = GeneratePrometheusResponse(_rootProvider(), settings);
 
         response.AddHeader("Cache-Control", "no-cache");
         response.AddHeader("Access-Control-Allow-Origin", "*");

@@ -465,30 +465,54 @@ public class Computer : IComputer
 
     private void Add(IGroup group)
     {
-        if (group == null)
-            return;
+        AddCore(group, CancellationToken.None, null);
+    }
 
+    /// <summary>
+    /// Inserts <paramref name="group" /> while holding <see cref="_lock" />. The deferred discovery paths pass the run's
+    /// <paramref name="cancellationToken" /> and <paramref name="isEnabled" /> so the final eligibility check and the
+    /// membership mutation are atomic with respect to <see cref="Close" />'s drain: a background task can therefore never
+    /// add (and leak) a group after the computer has already been torn down. Returns whether the group was added.
+    /// </summary>
+    private bool AddCore(IGroup group, CancellationToken cancellationToken, Func<bool> isEnabled)
+    {
+        if (group == null)
+            return false;
+
+        bool added = false;
         lock (_lock)
         {
-            if (_groups.Contains(group))
-                return;
-
-            _groups.Add(group);
-
-            if (group is IHardwareChanged hardwareChanged)
+            if (!cancellationToken.IsCancellationRequested && (isEnabled == null || isEnabled()) && !_groups.Contains(group))
             {
-                hardwareChanged.HardwareAdded += HardwareAddedEvent;
-                hardwareChanged.HardwareRemoved += HardwareRemovedEvent;
+                _groups.Add(group);
+
+                if (group is IHardwareChanged hardwareChanged)
+                {
+                    hardwareChanged.HardwareAdded += HardwareAddedEvent;
+                    hardwareChanged.HardwareRemoved += HardwareRemovedEvent;
+                }
+
+                TrackGroupHardwareDiscoveryTask(group);
+                added = true;
             }
-
-            TrackGroupHardwareDiscoveryTask(group);
         }
 
-        if (HardwareAdded != null)
+        if (added)
         {
-            foreach (IHardware hardware in group.Hardware)
-                HardwareAdded(hardware);
+            if (HardwareAdded != null)
+            {
+                foreach (IHardware hardware in group.Hardware)
+                    HardwareAdded(hardware);
+            }
         }
+        else if (isEnabled != null)
+        {
+            // Only the deferred path owns the group's lifetime here; if we declined to add it (run cancelled or the
+            // category was disabled meanwhile), close it so its USB/HID/serial handles are not leaked.
+            group.Close();
+        }
+
+        return added;
     }
 
     private void Remove(IGroup group)
@@ -777,13 +801,7 @@ public class Computer : IComputer
             if (group == null)
                 return;
 
-            if (cancellationToken.IsCancellationRequested || !isEnabled())
-            {
-                group.Close();
-                return;
-            }
-
-            Add(group);
+            AddCore(group, cancellationToken, isEnabled);
         });
         TrackDeferredGroupTask(task);
     }
@@ -830,13 +848,9 @@ public class Computer : IComputer
                 if (group == null)
                     continue;
 
-                if (cancellationToken.IsCancellationRequested || !isEnabled())
-                {
-                    group.Close();
+                // Stop the sequential block if the run was cancelled or the category was disabled while we were probing.
+                if (!AddCore(group, cancellationToken, isEnabled))
                     return;
-                }
-
-                Add(group);
             }
         });
         TrackDeferredGroupTask(task);

@@ -141,8 +141,9 @@ public class SensorTreeItemViewModelTests
 
         sensorVm.IsVisible = false;
         Assert.Equal(Visibility.Collapsed, sensorVm.RowVisibility);
-        
-        // typeGroup doesn't update automatically in ViewModel when child changes, so skip assert
+
+        // Hiding the group's only visible sensor now collapses the parent group too (no empty group header left behind).
+        Assert.Equal(Visibility.Collapsed, typeGroup.RowVisibility);
 
         vm.SetShowHiddenSensors(true);
 

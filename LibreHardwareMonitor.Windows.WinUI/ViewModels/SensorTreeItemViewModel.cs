@@ -18,6 +18,7 @@ namespace LibreHardwareMonitor.Windows.WinUI.ViewModels;
 public sealed class SensorTreeItemViewModel : ViewModelBase
 {
     private readonly AppSettings? _settings;
+    private SensorTreeItemViewModel? _parent;
     private string? _expandedSettingName;
     private bool _isExpanded = true;
     private bool _isVisible = true;
@@ -68,6 +69,10 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
                 _settings?.SetValue(new Identifier(Sensor.Identifier, "hidden").ToString(), !value);
 
             UpdateVisibilityState();
+
+            // A SensorType group's visibility depends on whether any child is visible, so recompute the parent too;
+            // otherwise hiding the last visible sensor leaves an empty group header (and the reverse on show).
+            _parent?.UpdateVisibilityState();
         }
     }
 
@@ -320,7 +325,11 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
         };
 
         foreach (ISensor sensor in sensors)
-            item.Children.Add(FromSensor(sensor, settings));
+        {
+            SensorTreeItemViewModel child = FromSensor(sensor, settings);
+            child._parent = item;
+            item.Children.Add(child);
+        }
 
         item.UpdateVisibilityState();
         return item;

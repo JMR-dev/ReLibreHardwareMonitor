@@ -678,7 +678,12 @@ internal sealed class IntelCpu : GenericCpu
             }
         }
 
-        if (HasTimeStampCounter && _timeStampCounterMultiplier > 0)
+        double timeStampCounterFrequency = TimeStampCounterFrequency;
+
+        // When TSC estimation is deferred to the background, TimeStampCounterFrequency is 0 until the estimate lands (or
+        // the base class self-corrects it from real TSC deltas after a couple of updates). Skip the bus/core clock math
+        // until it is known so the clock sensors keep their previous value instead of momentarily reporting 0 MHz.
+        if (HasTimeStampCounter && _timeStampCounterMultiplier > 0 && timeStampCounterFrequency > 0)
         {
             double newBusClock = 0;
             for (int i = 0; i < _coreClocks.Length; i++)
@@ -686,7 +691,7 @@ internal sealed class IntelCpu : GenericCpu
                 System.Threading.Thread.Sleep(1);
                 if (_pawnModule.ReadMsr(IA32_PERF_STATUS, out eax, out _, _cpuId[i][0].Affinity))
                 {
-                    newBusClock = TimeStampCounterFrequency / _timeStampCounterMultiplier;
+                    newBusClock = timeStampCounterFrequency / _timeStampCounterMultiplier;
                     switch (_microArchitecture)
                     {
                         case MicroArchitecture.Nehalem:
@@ -727,7 +732,7 @@ internal sealed class IntelCpu : GenericCpu
                 else
                 {
                     // if IA32_PERF_STATUS is not available, assume TSC frequency
-                    _coreClocks[i].Value = (float)TimeStampCounterFrequency;
+                    _coreClocks[i].Value = (float)timeStampCounterFrequency;
                 }
             }
 
