@@ -13,6 +13,8 @@
     <UseWinUI>true</UseWinUI>
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <!-- Required for resources.pri generation when publishing with PublishSingleFile (unpackaged WinUI app). -->
+    <EnableMsixTooling>true</EnableMsixTooling>
     <OutputPath>..\bin\$(Configuration)\</OutputPath>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
