@@ -1,4 +1,4 @@
-﻿// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
 // Copyright (C) LibreHardwareMonitor and Contributors.
 // Partial Copyright (C) Michael Möller <mmoeller@openhardwaremonitor.org> and Contributors.
@@ -68,7 +68,7 @@ public class Computer : IComputer
     private SMBios _smbios;
     private bool _storageEnabled;
     private CancellationTokenSource _deferredGroupCancellationTokenSource;
-    private TaskCompletionSource _deferredGroupCompletionSource = CreateCompletedTaskCompletionSource();
+    private TaskCompletionSource<object> _deferredGroupCompletionSource = CreateCompletedTaskCompletionSource();
     private List<Task> _deferredGroupTasks = [];
 
     /// <summary>
@@ -864,7 +864,7 @@ public class Computer : IComputer
         CancelDeferredGroupRun();
         lock (_deferredGroupLock)
         {
-            _deferredGroupCompletionSource = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _deferredGroupCompletionSource = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
             _deferredGroupTasks = [];
         }
 
@@ -875,7 +875,7 @@ public class Computer : IComputer
     {
         CancellationTokenSource cancellationTokenSource = _deferredGroupCancellationTokenSource;
         _deferredGroupCancellationTokenSource = null;
-        TaskCompletionSource completionSource;
+        TaskCompletionSource<object> completionSource;
 
         lock (_deferredGroupLock)
         {
@@ -894,14 +894,14 @@ public class Computer : IComputer
         completionSource.TrySetCanceled();
     }
 
-    private static TaskCompletionSource CreateCompletedTaskCompletionSource()
+    private static TaskCompletionSource<object> CreateCompletedTaskCompletionSource()
     {
-        TaskCompletionSource completionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        completionSource.SetResult();
+        TaskCompletionSource<object> completionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        completionSource.SetResult(null);
         return completionSource;
     }
 
-    private void CompleteDeferredGroupRun(TaskCompletionSource completionSource)
+    private void CompleteDeferredGroupRun(TaskCompletionSource<object> completionSource)
     {
         bool completed;
         lock (_deferredGroupLock)
@@ -909,7 +909,7 @@ public class Computer : IComputer
             if (!ReferenceEquals(completionSource, _deferredGroupCompletionSource))
                 return;
 
-            completed = completionSource.TrySetResult();
+            completed = completionSource.TrySetResult(null);
         }
 
         if (completed)
@@ -918,7 +918,7 @@ public class Computer : IComputer
 
     private void CompleteDeferredGroupRunWhenRegistered()
     {
-        TaskCompletionSource completionSource;
+        TaskCompletionSource<object> completionSource;
         Task[] tasks;
         lock (_deferredGroupLock)
         {
