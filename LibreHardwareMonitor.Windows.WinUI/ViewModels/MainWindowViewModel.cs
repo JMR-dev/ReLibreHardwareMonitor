@@ -129,7 +129,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         _showMinColumn = settings.GetValue("minMenuItem", false);
         _showMaxColumn = settings.GetValue("maxMenuItem", true);
         _showPlot = settings.GetValue("plotMenuItem", false);
-        _plotLocation = (PlotLocation)Math.Clamp(settings.GetValue("plotLocation", 0), 0, 1);
+        _plotLocation = (PlotLocation)Math.Clamp(settings.GetValue("plotLocation", 0), 0, 2);
         _plotStrokeThickness = Math.Clamp(settings.GetValue("plotStroke", 1) + 1, 1, 4);
         _temperatureUnit = (TemperatureUnit)Math.Clamp(settings.GetValue("TemperatureUnit", 0), 0, 1);
         _updateIntervalIndex = Math.Clamp(settings.GetValue("updateIntervalMenuItem", 2), 0, UpdateIntervals.Length - 1);
@@ -144,13 +144,19 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
     public event EventHandler? PlotInvalidated;
 
+    public event EventHandler? GadgetSensorsChanged;
+
+    public event EventHandler? TraySensorsChanged;
+
     public Visibility MaxColumnVisibility => ShowMaxColumn ? Visibility.Visible : Visibility.Collapsed;
 
     public Visibility MinColumnVisibility => ShowMinColumn ? Visibility.Visible : Visibility.Collapsed;
 
     public ObservableCollection<PlotSeriesViewModel> PlotSeries { get; } = [];
 
-    public Visibility PlotVisibility => ShowPlot ? Visibility.Visible : Visibility.Collapsed;
+    public bool IsPlotWindowVisible => ShowPlot && PlotLocation == PlotLocation.Window;
+
+    public Visibility PlotVisibility => ShowPlot && PlotLocation != PlotLocation.Window ? Visibility.Visible : Visibility.Collapsed;
 
     public ObservableCollection<SensorTreeItemViewModel> RootItems { get; } = [];
 
@@ -361,6 +367,12 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         }
     }
 
+    public bool ShowGadget
+    {
+        get => Settings.GetValue("gadgetMenuItem", false);
+        set => SetBooleanSetting("gadgetMenuItem", value);
+    }
+
     public bool RunWebServer
     {
         get => !IsWebServerUnavailable && Settings.GetValue("runWebServerMenuItem", false);
@@ -426,6 +438,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
             Settings.SetValue("plotLocation", (int)value);
             NotifyPlotLayoutChanged();
+            PlotInvalidated?.Invoke(this, EventArgs.Empty);
         }
     }
 
@@ -500,6 +513,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
             Settings.SetValue("plotMenuItem", value);
             OnPropertyChanged(nameof(PlotVisibility));
+            OnPropertyChanged(nameof(IsPlotWindowVisible));
             NotifyPlotLayoutChanged();
             PlotInvalidated?.Invoke(this, EventArgs.Empty);
         }
@@ -680,6 +694,46 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         RestartWebServerIfRunning();
     }
 
+    public bool IsSensorInGadget(SensorTreeItemViewModel item)
+    {
+        return item.Sensor != null && Settings.GetValue(GetSensorSettingName(item.Sensor, "gadget"), false);
+    }
+
+    public bool IsSensorInTray(SensorTreeItemViewModel item)
+    {
+        return item.Sensor != null && Settings.GetValue(GetSensorSettingName(item.Sensor, "tray"), false);
+    }
+
+    public IEnumerable<SensorTreeItemViewModel> GetGadgetSensorItems()
+    {
+        return RootItems.FirstOrDefault()?.EnumerateSensors().Where(IsSensorInGadget) ?? [];
+    }
+
+    public IEnumerable<SensorTreeItemViewModel> GetTraySensorItems()
+    {
+        return RootItems.FirstOrDefault()?.EnumerateSensors().Where(IsSensorInTray) ?? [];
+    }
+
+    public void SetSensorInGadget(SensorTreeItemViewModel item, bool value)
+    {
+        if (item.Sensor == null)
+            return;
+
+        SetSensorBooleanSetting(item.Sensor, "gadget", value);
+        GadgetSensorsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    public void SetSensorInTray(SensorTreeItemViewModel item, bool value)
+    {
+        if (item.Sensor == null)
+            return;
+
+        SetSensorBooleanSetting(item.Sensor, "tray", value);
+        if (!value)
+            Settings.Remove(GetSensorSettingName(item.Sensor, "traycolor"));
+        TraySensorsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
     public void SetSensorPenColor(SensorTreeItemViewModel item, Color? color)
     {
         if (item.Sensor == null)
@@ -838,6 +892,8 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
     private void NotifyPlotLayoutChanged()
     {
+        OnPropertyChanged(nameof(PlotVisibility));
+        OnPropertyChanged(nameof(IsPlotWindowVisible));
         OnPropertyChanged(nameof(PlotGridRow));
         OnPropertyChanged(nameof(PlotGridColumn));
         OnPropertyChanged(nameof(PlotGridRowSpan));
@@ -853,6 +909,20 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
         Settings.SetValue(settingName, value);
         OnPropertyChanged();
+    }
+
+    private void SetSensorBooleanSetting(ISensor sensor, string suffix, bool value)
+    {
+        string settingName = GetSensorSettingName(sensor, suffix);
+        if (value)
+            Settings.SetValue(settingName, true);
+        else
+            Settings.Remove(settingName);
+    }
+
+    private static string GetSensorSettingName(ISensor sensor, string suffix)
+    {
+        return new Identifier(sensor.Identifier, suffix).ToString();
     }
 
     private void SetHardwareFlag(bool value, bool currentValue, Action<bool> setValue)

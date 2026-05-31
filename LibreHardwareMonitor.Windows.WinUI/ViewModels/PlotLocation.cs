@@ -6,6 +6,7 @@ namespace LibreHardwareMonitor.Windows.WinUI.ViewModels;
 
 public enum PlotLocation
 {
-    Bottom = 0,
-    Right = 1
+    Window = 0,
+    Bottom = 1,
+    Right = 2
 }

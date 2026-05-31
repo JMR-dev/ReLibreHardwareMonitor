@@ -10,6 +10,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
 using LibreHardwareMonitor.Windows.WinUI.Services;
@@ -56,14 +57,20 @@ public sealed class MainWindow : Window
     private readonly TreeView _sensorTree;
     private readonly Grid _sensorPane;
     private readonly WinUiStartupTrace? _startupTrace;
+    private readonly TrayIconService _trayIconService;
     private readonly Dictionary<(string Text, bool Bold), double> _textMeasurementCache = new();
     private readonly List<Grid> _sensorRowGrids = [];
     private readonly double[] _sensorColumnWidths = [DefaultSensorColumnWidth, 120, 120, 120];
+    private PlotWindow? _plotWindow;
     private Grid? _sensorHeader;
+    private SensorGadgetWindow? _gadgetWindow;
     private double _stableDeviceColumnWidth = DefaultSensorColumnWidth;
     private bool _deviceColumnWidthSettled;
     private bool _firstLayoutRecorded;
     private bool _isUpdating;
+    private bool _initialWindowStateApplied;
+    private bool _isClosingForExit;
+    private bool _isMainWindowHidden;
     private bool _isMonitoringStarted;
     private bool _startupCompletionRequested;
     private bool _startupCompleteRecorded;
@@ -90,6 +97,12 @@ public sealed class MainWindow : Window
             appWindow.Title = "Libre Hardware Monitor";
             return appWindow;
         });
+
+        _trayIconService = MeasureStartup("MainWindow.CreateTrayIconService", () => new TrayIconService(
+            WindowNative.GetWindowHandle(this),
+            settings,
+            () => ViewModel.TemperatureUnit));
+        _trayIconService.IsMainIconEnabled = ViewModel.MinimizeToTray;
 
         Grid root = MeasureStartup("MainWindow.BuildRoot", BuildRoot);
         MeasureStartup("MainWindow.AssignContent", () => Content = root);
@@ -143,6 +156,18 @@ public sealed class MainWindow : Window
                     or nameof(ViewModel.PlotGridRow))
                     UpdatePlotLayout();
 
+                if (args.PropertyName == nameof(ViewModel.ShowGadget))
+                    UpdateGadgetVisibility();
+
+                if (args.PropertyName == nameof(ViewModel.MinimizeToTray))
+                    _trayIconService.IsMainIconEnabled = ViewModel.MinimizeToTray;
+
+                if (args.PropertyName == nameof(ViewModel.TemperatureUnit))
+                {
+                    _trayIconService.Update();
+                    SyncGadgetSensors();
+                }
+
                 if (args.PropertyName == nameof(ViewModel.ShowHiddenSensors))
                     QueueSensorTreeRebuild();
 
@@ -156,6 +181,11 @@ public sealed class MainWindow : Window
             };
             ViewModel.RootItems.CollectionChanged += RootItems_CollectionChanged;
             ViewModel.PlotInvalidated += (_, _) => DrawPlot();
+            ViewModel.GadgetSensorsChanged += (_, _) => SyncGadgetSensors();
+            ViewModel.TraySensorsChanged += (_, _) => SyncTraySensors();
+            _trayIconService.HideShowRequested += (_, _) => HideShowMainWindow();
+            _trayIconService.ExitRequested += (_, _) => CloseApplication();
+            _appWindow.Changed += AppWindow_Changed;
 
             Closed += MainWindow_Closed;
         });
@@ -176,7 +206,11 @@ public sealed class MainWindow : Window
             try
             {
                 _startupTrace?.Mark("MainWindow.StartMonitoringAfterActivation.Begin");
+                ApplyInitialWindowState();
                 await MeasureStartupAsync("MainWindowViewModel.StartAsync", ViewModel.StartAsync);
+                SyncTraySensors();
+                SyncGadgetSensors();
+                UpdateGadgetVisibility();
                 MeasureStartup("MainWindow.StartTimer", _timer.Start);
                 _startupTrace?.Mark("MainWindow.StartMonitoringAfterActivation.Complete");
                 RequestStartupTraceComplete();
@@ -330,7 +364,7 @@ public sealed class MainWindow : Window
         hardware.Items.Add(CreateToggleItem("Battery", nameof(ViewModel.IsBatteryEnabled)));
         file.Items.Add(hardware);
         file.Items.Add(new MenuFlyoutSeparator());
-        file.Items.Add(CreateMenuItem("Exit", (_, _) => Close()));
+        file.Items.Add(CreateMenuItem("Exit", (_, _) => CloseApplication()));
         menuBar.Items.Add(file);
 
         MenuBarItem view = new() { Title = "View" };
@@ -349,6 +383,7 @@ public sealed class MainWindow : Window
         view.Items.Add(new MenuFlyoutSeparator());
         view.Items.Add(CreateToggleItem("Show Hidden Sensors", nameof(ViewModel.ShowHiddenSensors)));
         view.Items.Add(CreateToggleItem("Show Plot", nameof(ViewModel.ShowPlot)));
+        view.Items.Add(CreateToggleItem("Gadget", nameof(ViewModel.ShowGadget)));
         MenuFlyoutSubItem columns = new() { Text = "Columns" };
         columns.Items.Add(CreateToggleItem("Value", nameof(ViewModel.ShowValueColumn)));
         columns.Items.Add(CreateToggleItem("Min", nameof(ViewModel.ShowMinColumn)));
@@ -367,6 +402,7 @@ public sealed class MainWindow : Window
             ("Fahrenheit", TemperatureUnit.Fahrenheit)
         ], () => ViewModel.TemperatureUnit, value => ViewModel.TemperatureUnit = value));
         options.Items.Add(BuildRadioSubMenu("Plot Location", [
+            ("Window", PlotLocation.Window),
             ("Bottom", PlotLocation.Bottom),
             ("Right", PlotLocation.Right)
         ], () => ViewModel.PlotLocation, value => ViewModel.PlotLocation = value));
@@ -607,6 +643,8 @@ public sealed class MainWindow : Window
         {
             await ViewModel.UpdateAsync();
             UpdateSensorColumnWidths();
+            _trayIconService.Update();
+            _gadgetWindow?.UpdateSensors(ViewModel.GetGadgetSensorItems());
             DrawPlot();
         }
         catch (Exception ex)
@@ -637,17 +675,170 @@ public sealed class MainWindow : Window
 
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {
+        if (!_isClosingForExit && ViewModel.MinimizeOnClose)
+        {
+            args.Handled = true;
+            MinimizeOrHideMainWindow();
+            return;
+        }
+
         _timer.Stop();
         _deviceColumnWidthSettleTimer.Stop();
+        _trayIconService.Dispose();
+        CloseSecondaryWindows();
         SaveWindowBounds();
         ViewModel.Dispose();
         _startupTrace?.Dispose();
+    }
+
+    private void AppWindow_Changed(AppWindow sender, AppWindowChangedEventArgs args)
+    {
+        if (_isClosingForExit || !ViewModel.MinimizeToTray)
+            return;
+
+        if (sender.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized })
+            HideMainWindowToTray();
+    }
+
+    private void ApplyInitialWindowState()
+    {
+        if (_initialWindowStateApplied)
+            return;
+
+        _initialWindowStateApplied = true;
+        if (ViewModel.StartMinimized)
+            MinimizeOrHideMainWindow();
+    }
+
+    private void CloseApplication()
+    {
+        _isClosingForExit = true;
+        Close();
+    }
+
+    private void CloseSecondaryWindows()
+    {
+        if (_gadgetWindow != null)
+        {
+            SensorGadgetWindow gadgetWindow = _gadgetWindow;
+            _gadgetWindow = null;
+            gadgetWindow.CloseFromOwner();
+        }
+
+        if (_plotWindow != null)
+        {
+            PlotWindow plotWindow = _plotWindow;
+            _plotWindow = null;
+            plotWindow.CloseFromOwner();
+        }
+    }
+
+    private void HideShowMainWindow()
+    {
+        IntPtr hwnd = WindowNative.GetWindowHandle(this);
+        if (_isMainWindowHidden || !IsWindowVisible(hwnd) || IsIconic(hwnd))
+            RestoreMainWindow();
+        else
+            HideMainWindowToTray();
+    }
+
+    private void MinimizeOrHideMainWindow()
+    {
+        if (ViewModel.MinimizeToTray)
+            HideMainWindowToTray();
+        else
+        {
+            _isMainWindowHidden = false;
+            ShowWindow(WindowNative.GetWindowHandle(this), ShowWindowMinimize);
+        }
+    }
+
+    private void HideMainWindowToTray()
+    {
+        _isMainWindowHidden = true;
+        ShowWindow(WindowNative.GetWindowHandle(this), ShowWindowHide);
+    }
+
+    private void RestoreMainWindow()
+    {
+        IntPtr hwnd = WindowNative.GetWindowHandle(this);
+        _isMainWindowHidden = false;
+        ShowWindow(hwnd, ShowWindowShow);
+        ShowWindow(hwnd, ShowWindowRestore);
+        Activate();
+    }
+
+    private void SyncTraySensors()
+    {
+        _trayIconService.RestoreSelectedSensors(ViewModel.GetTraySensorItems());
+    }
+
+    private void SyncGadgetSensors()
+    {
+        _gadgetWindow?.UpdateSensors(ViewModel.GetGadgetSensorItems());
+    }
+
+    private void UpdateGadgetVisibility()
+    {
+        if (ViewModel.ShowGadget)
+        {
+            if (_gadgetWindow == null)
+            {
+                _gadgetWindow = new SensorGadgetWindow(ViewModel);
+                _gadgetWindow.HideShowMainWindowRequested += (_, _) => HideShowMainWindow();
+                _gadgetWindow.UserClosed += (_, _) =>
+                {
+                    _gadgetWindow = null;
+                    ViewModel.ShowGadget = false;
+                };
+                SyncGadgetSensors();
+                _gadgetWindow.Activate();
+            }
+
+            return;
+        }
+
+        if (_gadgetWindow != null)
+        {
+            SensorGadgetWindow gadgetWindow = _gadgetWindow;
+            _gadgetWindow = null;
+            gadgetWindow.CloseFromOwner();
+        }
+    }
+
+    private void UpdatePlotWindowVisibility()
+    {
+        if (ViewModel.IsPlotWindowVisible)
+        {
+            if (_plotWindow == null)
+            {
+                _plotWindow = new PlotWindow(ViewModel.Settings);
+                _plotWindow.PlotSizeChanged += (_, _) => DrawPlot();
+                _plotWindow.UserClosed += (_, _) =>
+                {
+                    _plotWindow = null;
+                    ViewModel.ShowPlot = false;
+                };
+                _plotWindow.Activate();
+            }
+
+            return;
+        }
+
+        if (_plotWindow != null)
+        {
+            PlotWindow plotWindow = _plotWindow;
+            _plotWindow = null;
+            plotWindow.CloseFromOwner();
+        }
     }
 
     private void RebuildSensorTree()
     {
         MeasureStartup("MainWindow.RebuildSensorTree", RebuildSensorTreeCore, GetRootSizeDetail);
         ScheduleDeviceColumnWidthSettle();
+        SyncTraySensors();
+        SyncGadgetSensors();
         if (_startupCompletionRequested)
             CompleteStartupTraceIfReady();
     }
@@ -764,6 +955,11 @@ public sealed class MainWindow : Window
         row.Children.Add(CreateValueTextBlock(item, nameof(SensorTreeItemViewModel.Max), nameof(SensorTreeItemViewModel.MaxColumnVisibility), 3));
 
         row.ContextFlyout = BuildSensorContextMenu(item);
+        row.DoubleTapped += async (_, _) =>
+        {
+            if (item.Sensor?.Parameters.Count > 0)
+                await ShowParametersAsync(item);
+        };
         return row;
     }
 
@@ -780,6 +976,32 @@ public sealed class MainWindow : Window
         ToggleMenuFlyoutItem plot = new() { Text = "Show in Plot", IsEnabled = item.Sensor != null };
         Bind(plot, ToggleMenuFlyoutItem.IsCheckedProperty, item, nameof(SensorTreeItemViewModel.Plot), BindingMode.TwoWay);
         flyout.Items.Add(plot);
+
+        ToggleMenuFlyoutItem tray = new()
+        {
+            Text = "Show in Tray",
+            IsChecked = ViewModel.IsSensorInTray(item),
+            IsEnabled = item.Sensor != null
+        };
+        tray.Click += (_, _) =>
+        {
+            ViewModel.SetSensorInTray(item, tray.IsChecked);
+            SyncTraySensors();
+        };
+        flyout.Items.Add(tray);
+
+        ToggleMenuFlyoutItem gadget = new()
+        {
+            Text = "Show in Gadget",
+            IsChecked = ViewModel.IsSensorInGadget(item),
+            IsEnabled = item.Sensor != null
+        };
+        gadget.Click += (_, _) =>
+        {
+            ViewModel.SetSensorInGadget(item, gadget.IsChecked);
+            SyncGadgetSensors();
+        };
+        flyout.Items.Add(gadget);
 
         MenuFlyoutItem hide = CreateMenuItem(item.IsVisible ? "Hide Sensor" : "Unhide Sensor", (_, _) =>
         {
@@ -1175,11 +1397,19 @@ public sealed class MainWindow : Window
 
     private void DrawPlot()
     {
-        if (_plotCanvas == null)
-            return;
+        if (ViewModel.PlotLocation == PlotLocation.Window)
+            _plotCanvas.Children.Clear();
+        else
+            DrawPlot(_plotCanvas);
 
-        _plotCanvas.Children.Clear();
-        if (!ViewModel.ShowPlot || ViewModel.PlotSeries.Count == 0 || _plotCanvas.ActualWidth <= 4 || _plotCanvas.ActualHeight <= 4)
+        if (_plotWindow != null)
+            DrawPlot(_plotWindow.PlotCanvas);
+    }
+
+    private void DrawPlot(Canvas canvas)
+    {
+        canvas.Children.Clear();
+        if (!ViewModel.ShowPlot || ViewModel.PlotSeries.Count == 0 || canvas.ActualWidth <= 4 || canvas.ActualHeight <= 4)
             return;
 
         double minTime = double.MaxValue;
@@ -1210,9 +1440,9 @@ public sealed class MainWindow : Window
             minValue -= 1;
         }
 
-        double width = _plotCanvas.ActualWidth;
-        double height = _plotCanvas.ActualHeight;
-        DrawAxis(width, height);
+        double width = canvas.ActualWidth;
+        double height = canvas.ActualHeight;
+        DrawAxis(canvas, width, height);
 
         foreach (PlotSeriesViewModel plotSeries in ViewModel.PlotSeries)
         {
@@ -1230,17 +1460,17 @@ public sealed class MainWindow : Window
                 line.Points.Add(new global::Windows.Foundation.Point(x, y));
             }
 
-            _plotCanvas.Children.Add(line);
+            canvas.Children.Add(line);
         }
     }
 
-    private void DrawAxis(double width, double height)
+    private static void DrawAxis(Canvas canvas, double width, double height)
     {
         SolidColorBrush brush = new(Colors.Gray);
         for (int i = 1; i < 4; i++)
         {
             double y = height * i / 4;
-            _plotCanvas.Children.Add(new Line
+            canvas.Children.Add(new Line
             {
                 X1 = 0,
                 X2 = width,
@@ -1258,13 +1488,14 @@ public sealed class MainWindow : Window
         _contentGrid.ColumnDefinitions[1].Width = ViewModel.ShowPlot && ViewModel.PlotLocation == PlotLocation.Right ? new GridLength(320) : new GridLength(0);
         _contentGrid.RowDefinitions[1].Height = ViewModel.ShowPlot && ViewModel.PlotLocation == PlotLocation.Bottom ? new GridLength(220) : new GridLength(0);
 
-        _plotPane.Visibility = ViewModel.ShowPlot ? Visibility.Visible : Visibility.Collapsed;
+        _plotPane.Visibility = ViewModel.PlotVisibility;
         Grid.SetRow(_plotPane, ViewModel.PlotGridRow);
         Grid.SetColumn(_plotPane, ViewModel.PlotGridColumn);
         Grid.SetRowSpan(_plotPane, ViewModel.PlotGridRowSpan);
         Grid.SetColumnSpan(_plotPane, ViewModel.PlotGridColumnSpan);
         Grid.SetRowSpan(_sensorPane, ViewModel.SensorGridRowSpan);
         Grid.SetColumnSpan(_sensorPane, ViewModel.SensorGridColumnSpan);
+        UpdatePlotWindowVisibility();
         DrawPlot();
     }
 
@@ -1514,6 +1745,23 @@ public sealed class MainWindow : Window
             return [];
         }
     }
+
+    private const int ShowWindowHide = 0;
+    private const int ShowWindowShow = 5;
+    private const int ShowWindowMinimize = 6;
+    private const int ShowWindowRestore = 9;
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ShowWindow(IntPtr windowHandle, int command);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsIconic(IntPtr windowHandle);
 
     private sealed record ParameterEditorRow(IParameter Parameter, Grid Container, CheckBox UseDefault, TextBox Value);
 
