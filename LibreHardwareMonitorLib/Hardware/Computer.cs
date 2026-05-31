@@ -50,6 +50,7 @@ public class Computer : IComputer
     private const string DeferPsuDetectionEnvironmentVariable = "LHM_PSU_DEFER_DETECTION";
     private const string DeferPsuDetectionSetting = "psu.deferDetection";
 
+    private readonly object _deferredGroupLock = new();
     private readonly List<IGroup> _groups = new();
     private readonly object _lock = new();
     private readonly ISettings _settings;
@@ -67,6 +68,8 @@ public class Computer : IComputer
     private SMBios _smbios;
     private bool _storageEnabled;
     private CancellationTokenSource _deferredGroupCancellationTokenSource;
+    private TaskCompletionSource _deferredGroupCompletionSource = CreateCompletedTaskCompletionSource();
+    private List<Task> _deferredGroupTasks = [];
 
     /// <summary>
     /// Creates a new <see cref="IComputer" /> instance with basic initial <see cref="Settings" />.
@@ -90,6 +93,17 @@ public class Computer : IComputer
 
     /// <inheritdoc />
     public event HardwareEventHandler HardwareRemoved;
+
+    public event EventHandler HardwareDiscoveryCompleted;
+
+    public Task HardwareDiscoveryTask
+    {
+        get
+        {
+            lock (_deferredGroupLock)
+                return _deferredGroupCompletionSource.Task;
+        }
+    }
 
     /// <inheritdoc />
     public IList<IHardware> Hardware
@@ -466,6 +480,8 @@ public class Computer : IComputer
                 hardwareChanged.HardwareAdded += HardwareAddedEvent;
                 hardwareChanged.HardwareRemoved += HardwareRemovedEvent;
             }
+
+            TrackGroupHardwareDiscoveryTask(group);
         }
 
         if (HardwareAdded != null)
@@ -577,6 +593,7 @@ public class Computer : IComputer
             Measure(startupTrace, "OpCode.Open", OpCode.Open);
 
             AddGroups(startupTrace, cancellationToken);
+            CompleteDeferredGroupRunWhenRegistered();
 
             _open = true;
         }
@@ -742,7 +759,7 @@ public class Computer : IComputer
         }
 
         CancellationToken cancellationToken = cancellationTokenSource.Token;
-        Task.Run(() =>
+        Task task = Task.Run(() =>
         {
             IGroup group = null;
             try
@@ -768,6 +785,7 @@ public class Computer : IComputer
 
             Add(group);
         });
+        TrackDeferredGroupTask(task);
     }
 
     private void AddDeferredGroups(Func<bool> isEnabled, params Func<IGroup>[] createGroups)
@@ -789,7 +807,7 @@ public class Computer : IComputer
         }
 
         CancellationToken cancellationToken = cancellationTokenSource.Token;
-        Task.Run(() =>
+        Task task = Task.Run(() =>
         {
             foreach (Func<IGroup> createGroup in createGroups)
             {
@@ -821,6 +839,7 @@ public class Computer : IComputer
                 Add(group);
             }
         });
+        TrackDeferredGroupTask(task);
     }
 
     private bool ShouldDeferDetection(string settingName, string environmentVariable)
@@ -843,6 +862,12 @@ public class Computer : IComputer
     private void StartDeferredGroupRun()
     {
         CancelDeferredGroupRun();
+        lock (_deferredGroupLock)
+        {
+            _deferredGroupCompletionSource = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _deferredGroupTasks = [];
+        }
+
         _deferredGroupCancellationTokenSource = new CancellationTokenSource();
     }
 
@@ -850,12 +875,81 @@ public class Computer : IComputer
     {
         CancellationTokenSource cancellationTokenSource = _deferredGroupCancellationTokenSource;
         _deferredGroupCancellationTokenSource = null;
+        TaskCompletionSource completionSource;
+
+        lock (_deferredGroupLock)
+        {
+            completionSource = _deferredGroupCompletionSource;
+            _deferredGroupTasks = [];
+        }
 
         if (cancellationTokenSource == null)
+        {
+            completionSource.TrySetCanceled();
             return;
+        }
 
         cancellationTokenSource.Cancel();
         cancellationTokenSource.Dispose();
+        completionSource.TrySetCanceled();
+    }
+
+    private static TaskCompletionSource CreateCompletedTaskCompletionSource()
+    {
+        TaskCompletionSource completionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        completionSource.SetResult();
+        return completionSource;
+    }
+
+    private void CompleteDeferredGroupRun(TaskCompletionSource completionSource)
+    {
+        bool completed;
+        lock (_deferredGroupLock)
+        {
+            if (!ReferenceEquals(completionSource, _deferredGroupCompletionSource))
+                return;
+
+            completed = completionSource.TrySetResult();
+        }
+
+        if (completed)
+            HardwareDiscoveryCompleted?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void CompleteDeferredGroupRunWhenRegistered()
+    {
+        TaskCompletionSource completionSource;
+        Task[] tasks;
+        lock (_deferredGroupLock)
+        {
+            completionSource = _deferredGroupCompletionSource;
+            tasks = _deferredGroupTasks.ToArray();
+        }
+
+        if (tasks.Length == 0)
+        {
+            CompleteDeferredGroupRun(completionSource);
+            return;
+        }
+
+        _ = Task.WhenAll(tasks).ContinueWith(_ => CompleteDeferredGroupRun(completionSource),
+                                             CancellationToken.None,
+                                             TaskContinuationOptions.ExecuteSynchronously,
+                                             TaskScheduler.Default);
+    }
+
+    private void TrackDeferredGroupTask(Task task)
+    {
+        lock (_deferredGroupLock)
+            _deferredGroupTasks.Add(task);
+    }
+
+    private void TrackGroupHardwareDiscoveryTask(IGroup group)
+    {
+        if (group is not IHardwareDiscoveryTask hardwareDiscoveryTask || hardwareDiscoveryTask.HardwareDiscoveryTask.IsCompleted)
+            return;
+
+        TrackDeferredGroupTask(hardwareDiscoveryTask.HardwareDiscoveryTask);
     }
 
     private static void NewSection(TextWriter writer)
@@ -969,6 +1063,7 @@ public class Computer : IComputer
         StartDeferredGroupRun();
         RemoveGroups();
         AddGroups(null, CancellationToken.None);
+        CompleteDeferredGroupRunWhenRegistered();
     }
 
     private void RemoveGroups()

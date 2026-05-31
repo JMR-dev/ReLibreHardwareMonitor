@@ -35,87 +35,139 @@ namespace LibreHardwareMonitor.Windows.WinUI;
 
 public sealed class MainWindow : Window
 {
+    private static readonly TimeSpan DeviceColumnWidthSettleDelay = TimeSpan.FromSeconds(5);
+
+    private const double DefaultSensorColumnWidth = 320;
+    private const double MaximumSensorColumnWidth = 4096;
+    private const double MinimumSensorColumnWidth = 120;
     private const double SensorColumnPadding = 72;
     private const double SensorTreeIndentWidth = 20;
+    private const string DeviceColumnWidthSetting = "winui.deviceColumnWidth";
     private const double ValueColumnPadding = 18;
+    private const int MaxTextMeasurementCacheEntries = 4096;
 
     private readonly AppWindow _appWindow;
     private readonly Grid _contentGrid;
+    private readonly DispatcherQueueTimer _deviceColumnWidthSettleTimer;
     private readonly DispatcherQueueTimer _timer;
     private readonly Canvas _plotCanvas;
     private readonly Grid _plotPane;
     private readonly Grid _rootGrid;
     private readonly TreeView _sensorTree;
     private readonly Grid _sensorPane;
+    private readonly WinUiStartupTrace? _startupTrace;
+    private readonly Dictionary<(string Text, bool Bold), double> _textMeasurementCache = new();
     private readonly List<Grid> _sensorRowGrids = [];
-    private readonly double[] _sensorColumnWidths = [320, 120, 120, 120];
+    private readonly double[] _sensorColumnWidths = [DefaultSensorColumnWidth, 120, 120, 120];
     private Grid? _sensorHeader;
+    private double _stableDeviceColumnWidth = DefaultSensorColumnWidth;
+    private bool _deviceColumnWidthSettled;
+    private bool _firstLayoutRecorded;
     private bool _isUpdating;
     private bool _isMonitoringStarted;
+    private bool _startupCompletionRequested;
+    private bool _startupCompleteRecorded;
+    private bool _sensorTreeRebuildQueued;
+    private bool _sensorColumnWidthUpdateQueued;
 
-    public MainWindow()
+    public MainWindow() : this(null)
     {
-        AppSettings settings = AppSettings.LoadDefault();
-        ViewModel = new MainWindowViewModel(settings);
+    }
 
-        IntPtr hwnd = WindowNative.GetWindowHandle(this);
-        WindowId windowId = Win32Interop.GetWindowIdFromWindow(hwnd);
-        _appWindow = AppWindow.GetFromWindowId(windowId);
-        _appWindow.Title = "Libre Hardware Monitor";
+    internal MainWindow(WinUiStartupTrace? startupTrace)
+    {
+        _startupTrace = startupTrace;
+        _startupTrace?.Mark("MainWindow.Constructor.Begin");
+        AppSettings settings = MeasureStartup("MainWindow.LoadSettings", AppSettings.LoadDefault);
+        ViewModel = MeasureStartup("MainWindow.CreateViewModel", () => new MainWindowViewModel(settings, _startupTrace));
+        MeasureStartup("MainWindow.ApplySavedDeviceColumnWidth", () => ApplySavedDeviceColumnWidth(settings), () => FormattableString.Invariant($"width={_sensorColumnWidths[0]:F0}"));
 
-        Grid root = BuildRoot();
-        Content = root;
-        _rootGrid = root;
-
-        _contentGrid = (Grid)root.Children[1];
-        _sensorPane = (Grid)_contentGrid.Children[0];
-        _plotPane = (Grid)_contentGrid.Children[1];
-        _sensorTree = (TreeView)((Grid)_sensorPane.Children[1]).Children[0];
-        _plotCanvas = (Canvas)_plotPane.Children[1];
-
-        RestoreWindowBounds();
-        MaximizeWindow();
-        ApplyTheme();
-        UpdatePlotLayout();
-
-        _timer = DispatcherQueue.CreateTimer();
-        _timer.Interval = ViewModel.UpdateInterval;
-        _timer.Tick += UpdateTimer_Tick;
-
-        ViewModel.PropertyChanged += (_, args) =>
+        _appWindow = MeasureStartup("MainWindow.GetAppWindow", () =>
         {
-            if (args.PropertyName is nameof(ViewModel.UpdateInterval) or nameof(ViewModel.UpdateIntervalIndex))
-                _timer.Interval = ViewModel.UpdateInterval;
+            IntPtr hwnd = WindowNative.GetWindowHandle(this);
+            WindowId windowId = Win32Interop.GetWindowIdFromWindow(hwnd);
+            AppWindow appWindow = AppWindow.GetFromWindowId(windowId);
+            appWindow.Title = "Libre Hardware Monitor";
+            return appWindow;
+        });
 
-            if (args.PropertyName is nameof(ViewModel.ShowPlot)
-                or nameof(ViewModel.PlotLocation)
-                or nameof(ViewModel.PlotGridColumn)
-                or nameof(ViewModel.PlotGridRow))
-                UpdatePlotLayout();
+        Grid root = MeasureStartup("MainWindow.BuildRoot", BuildRoot);
+        MeasureStartup("MainWindow.AssignContent", () => Content = root);
+        _rootGrid = root;
+        _rootGrid.Loaded += RootGrid_Loaded;
+        _rootGrid.LayoutUpdated += RootGrid_LayoutUpdated;
 
-            if (args.PropertyName == nameof(ViewModel.ShowHiddenSensors))
-                RebuildSensorTree();
+        (Grid contentGrid, Grid sensorPane, Grid plotPane, TreeView sensorTree, Canvas plotCanvas) = MeasureStartup("MainWindow.ResolveControls", () =>
+        {
+            Grid resolvedContentGrid = (Grid)root.Children[1];
+            Grid resolvedSensorPane = (Grid)resolvedContentGrid.Children[0];
+            Grid resolvedPlotPane = (Grid)resolvedContentGrid.Children[1];
+            TreeView resolvedSensorTree = (TreeView)((Grid)resolvedSensorPane.Children[1]).Children[0];
+            Canvas resolvedPlotCanvas = (Canvas)resolvedPlotPane.Children[1];
+            return (resolvedContentGrid, resolvedSensorPane, resolvedPlotPane, resolvedSensorTree, resolvedPlotCanvas);
+        });
+        _contentGrid = contentGrid;
+        _sensorPane = sensorPane;
+        _plotPane = plotPane;
+        _sensorTree = sensorTree;
+        _plotCanvas = plotCanvas;
 
-            if (args.PropertyName is nameof(ViewModel.ShowValueColumn)
-                or nameof(ViewModel.ShowMinColumn)
-                or nameof(ViewModel.ShowMaxColumn))
-                UpdateSensorColumnWidths();
+        MeasureStartup("MainWindow.RestoreWindowBounds", RestoreWindowBounds);
+        MeasureStartup("MainWindow.MaximizeWindow", MaximizeWindow);
+        MeasureStartup("MainWindow.ApplyTheme", ApplyTheme);
+        MeasureStartup("MainWindow.UpdatePlotLayout", UpdatePlotLayout);
 
-            if (args.PropertyName == nameof(ViewModel.ThemeMode))
-                ApplyTheme();
-        };
-        ViewModel.RootItems.CollectionChanged += RootItems_CollectionChanged;
-        ViewModel.PlotInvalidated += (_, _) => DrawPlot();
+        (_timer, _deviceColumnWidthSettleTimer) = MeasureStartup("MainWindow.CreateTimers", () =>
+        {
+            DispatcherQueueTimer timer = DispatcherQueue.CreateTimer();
+            timer.Interval = ViewModel.UpdateInterval;
+            timer.Tick += UpdateTimer_Tick;
 
-        Closed += MainWindow_Closed;
+            DispatcherQueueTimer settleTimer = DispatcherQueue.CreateTimer();
+            settleTimer.Interval = DeviceColumnWidthSettleDelay;
+            settleTimer.Tick += DeviceColumnWidthSettleTimer_Tick;
 
+            return (timer, settleTimer);
+        });
+
+        MeasureStartup("MainWindow.WireEvents", () =>
+        {
+            ViewModel.PropertyChanged += (_, args) =>
+            {
+                if (args.PropertyName is nameof(ViewModel.UpdateInterval) or nameof(ViewModel.UpdateIntervalIndex))
+                    _timer.Interval = ViewModel.UpdateInterval;
+
+                if (args.PropertyName is nameof(ViewModel.ShowPlot)
+                    or nameof(ViewModel.PlotLocation)
+                    or nameof(ViewModel.PlotGridColumn)
+                    or nameof(ViewModel.PlotGridRow))
+                    UpdatePlotLayout();
+
+                if (args.PropertyName == nameof(ViewModel.ShowHiddenSensors))
+                    QueueSensorTreeRebuild();
+
+                if (args.PropertyName is nameof(ViewModel.ShowValueColumn)
+                    or nameof(ViewModel.ShowMinColumn)
+                    or nameof(ViewModel.ShowMaxColumn))
+                    QueueSensorColumnWidthUpdate();
+
+                if (args.PropertyName == nameof(ViewModel.ThemeMode))
+                    ApplyTheme();
+            };
+            ViewModel.RootItems.CollectionChanged += RootItems_CollectionChanged;
+            ViewModel.PlotInvalidated += (_, _) => DrawPlot();
+
+            Closed += MainWindow_Closed;
+        });
+        _startupTrace?.Mark("MainWindow.Constructor.Complete");
     }
 
     public MainWindowViewModel ViewModel { get; }
 
     public void StartMonitoringAfterActivation()
     {
-        DispatcherQueue.TryEnqueue(async () =>
+        _startupTrace?.Mark("MainWindow.StartMonitoringAfterActivation.Queued");
+        if (!DispatcherQueue.TryEnqueue(async () =>
         {
             if (_isMonitoringStarted)
                 return;
@@ -123,16 +175,88 @@ public sealed class MainWindow : Window
             _isMonitoringStarted = true;
             try
             {
-                await Task.Delay(250);
-                await ViewModel.StartAsync();
-                RebuildSensorTree();
-                _timer.Start();
+                _startupTrace?.Mark("MainWindow.StartMonitoringAfterActivation.Begin");
+                await MeasureStartupAsync("MainWindowViewModel.StartAsync", ViewModel.StartAsync);
+                MeasureStartup("MainWindow.StartTimer", _timer.Start);
+                _startupTrace?.Mark("MainWindow.StartMonitoringAfterActivation.Complete");
+                RequestStartupTraceComplete();
+                _startupTrace?.Flush();
             }
             catch (Exception ex)
             {
+                _startupTrace?.Mark("MainWindow.StartMonitoringAfterActivation.Exception", $"{ex.GetType().FullName}: {ex.Message}");
+                _startupTrace?.Flush();
                 RecordRuntimeError("Hardware initialization failed", ex);
             }
-        });
+        }))
+        {
+            _startupTrace?.Mark("MainWindow.StartMonitoringAfterActivation.EnqueueFailed");
+            _startupTrace?.Flush();
+        }
+    }
+
+    private string GetRootSizeDetail()
+    {
+        return FormattableString.Invariant($"root={_rootGrid.ActualWidth:F0}x{_rootGrid.ActualHeight:F0}, rows={_sensorRowGrids.Count}, rootNodes={_sensorTree.RootNodes.Count}");
+    }
+
+    private void RootGrid_Loaded(object sender, RoutedEventArgs e)
+    {
+        _rootGrid.Loaded -= RootGrid_Loaded;
+        _startupTrace?.Mark("MainWindow.RootLoaded", GetRootSizeDetail());
+        _startupTrace?.Flush();
+    }
+
+    private void RootGrid_LayoutUpdated(object? sender, object e)
+    {
+        if (_firstLayoutRecorded)
+            return;
+
+        _firstLayoutRecorded = true;
+        _rootGrid.LayoutUpdated -= RootGrid_LayoutUpdated;
+        _startupTrace?.Mark("MainWindow.FirstLayoutUpdated", GetRootSizeDetail());
+        _startupTrace?.Flush();
+    }
+
+    private void MeasureStartup(string phase, Action action)
+    {
+        if (_startupTrace is not { IsComplete: false })
+        {
+            action();
+            return;
+        }
+
+        _startupTrace.Measure(phase, action);
+    }
+
+    private void MeasureStartup(string phase, Action action, Func<string> getDetail)
+    {
+        if (_startupTrace is not { IsComplete: false })
+        {
+            action();
+            return;
+        }
+
+        _startupTrace.Measure(phase, action, getDetail);
+    }
+
+    private T MeasureStartup<T>(string phase, Func<T> action)
+    {
+        if (_startupTrace is not { IsComplete: false })
+            return action();
+
+        return _startupTrace.Measure(phase, action);
+    }
+
+    private async Task MeasureStartupAsync(string phase, Func<Task> action)
+    {
+        if (_startupTrace is not { IsComplete: false })
+        {
+            await action();
+            return;
+        }
+
+        await _startupTrace.MeasureAsync(phase, action);
     }
 
     private Grid BuildRoot()
@@ -148,7 +272,7 @@ public sealed class MainWindow : Window
             }
         };
 
-        root.Children.Add(BuildMenuBar());
+        root.Children.Add(MeasureStartup("MainWindow.BuildMenuBar", BuildMenuBar));
 
         Grid contentGrid = new()
         {
@@ -163,10 +287,11 @@ public sealed class MainWindow : Window
                 new RowDefinition { Height = new GridLength(220) }
             }
         };
+        Bind(contentGrid, UIElement.IsHitTestVisibleProperty, ViewModel, nameof(ViewModel.IsHardwareInteractionEnabled));
         Grid.SetRow(contentGrid, 1);
 
-        contentGrid.Children.Add(BuildSensorPane());
-        contentGrid.Children.Add(BuildPlotPane());
+        contentGrid.Children.Add(MeasureStartup("MainWindow.BuildSensorPane", BuildSensorPane));
+        contentGrid.Children.Add(MeasureStartup("MainWindow.BuildPlotPane", BuildPlotPane));
         root.Children.Add(contentGrid);
 
         TextBlock statusText = new()
@@ -178,12 +303,15 @@ public sealed class MainWindow : Window
         Grid.SetRow(statusText, 2);
         root.Children.Add(statusText);
 
+        root.Children.Add(BuildLoadingOverlay());
+
         return root;
     }
 
     private MenuBar BuildMenuBar()
     {
         MenuBar menuBar = new();
+        Bind(menuBar, Control.IsEnabledProperty, ViewModel, nameof(ViewModel.IsHardwareInteractionEnabled));
 
         MenuBarItem file = new() { Title = "File" };
         file.Items.Add(CreateMenuItem("Save Report...", async (_, _) => await SaveReportAsync()));
@@ -319,6 +447,43 @@ public sealed class MainWindow : Window
         return menuBar;
     }
 
+    private Grid BuildLoadingOverlay()
+    {
+        Grid overlay = new()
+        {
+            Background = new SolidColorBrush(global::Windows.UI.Color.FromArgb(150, 128, 128, 128)),
+            Visibility = ViewModel.HardwareLoadingVisibility,
+            IsHitTestVisible = true
+        };
+        Bind(overlay, UIElement.VisibilityProperty, ViewModel, nameof(ViewModel.HardwareLoadingVisibility));
+        Grid.SetRowSpan(overlay, 3);
+        Canvas.SetZIndex(overlay, 1000);
+
+        StackPanel content = new()
+        {
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Spacing = 12
+        };
+        ProgressRing progressRing = new()
+        {
+            Width = 64,
+            Height = 64,
+            IsIndeterminate = true
+        };
+        TextBlock text = new()
+        {
+            Text = "Loading hardware devices...",
+            FontWeight = new global::Windows.UI.Text.FontWeight { Weight = 600 },
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+        content.Children.Add(progressRing);
+        content.Children.Add(text);
+        overlay.Children.Add(content);
+
+        return overlay;
+    }
+
     private Grid BuildSensorPane()
     {
         Grid pane = new()
@@ -397,7 +562,39 @@ public sealed class MainWindow : Window
 
     private void RootItems_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-        RebuildSensorTree();
+        QueueSensorTreeRebuild();
+    }
+
+    private void QueueSensorTreeRebuild()
+    {
+        if (_sensorTreeRebuildQueued)
+            return;
+
+        _sensorTreeRebuildQueued = true;
+        if (!DispatcherQueue.TryEnqueue(() =>
+        {
+            _sensorTreeRebuildQueued = false;
+            RebuildSensorTree();
+        }))
+        {
+            _sensorTreeRebuildQueued = false;
+        }
+    }
+
+    private void QueueSensorColumnWidthUpdate()
+    {
+        if (_sensorColumnWidthUpdateQueued)
+            return;
+
+        _sensorColumnWidthUpdateQueued = true;
+        if (!DispatcherQueue.TryEnqueue(() =>
+        {
+            _sensorColumnWidthUpdateQueued = false;
+            UpdateSensorColumnWidths();
+        }))
+        {
+            _sensorColumnWidthUpdateQueued = false;
+        }
     }
 
     private async void UpdateTimer_Tick(DispatcherQueueTimer sender, object args)
@@ -425,19 +622,37 @@ public sealed class MainWindow : Window
 
     private void RecordRuntimeError(string message, Exception exception)
     {
+        _startupTrace?.Mark("MainWindow.RuntimeError", $"{message}: {exception.GetType().FullName}: {exception.Message}");
+        _startupTrace?.Flush();
         string logPath = IOPath.Combine(AppContext.BaseDirectory, "LibreHardwareMonitor.Windows.WinUI.startup.log");
         File.WriteAllText(logPath, exception.ToString());
         ViewModel.SetStatusText($"{message}. See {IOPath.GetFileName(logPath)}.");
     }
 
+    private void ApplySavedDeviceColumnWidth(AppSettings settings)
+    {
+        _stableDeviceColumnWidth = NormalizeDeviceColumnWidth(settings.GetValue(DeviceColumnWidthSetting, DefaultSensorColumnWidth));
+        _sensorColumnWidths[0] = _stableDeviceColumnWidth;
+    }
+
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {
         _timer.Stop();
+        _deviceColumnWidthSettleTimer.Stop();
         SaveWindowBounds();
         ViewModel.Dispose();
+        _startupTrace?.Dispose();
     }
 
     private void RebuildSensorTree()
+    {
+        MeasureStartup("MainWindow.RebuildSensorTree", RebuildSensorTreeCore, GetRootSizeDetail);
+        ScheduleDeviceColumnWidthSettle();
+        if (_startupCompletionRequested)
+            CompleteStartupTraceIfReady();
+    }
+
+    private void RebuildSensorTreeCore()
     {
         if (_sensorTree == null)
             return;
@@ -452,6 +667,39 @@ public sealed class MainWindow : Window
         }
 
         UpdateSensorColumnWidths();
+    }
+
+    private void CompleteStartupTraceIfReady()
+    {
+        if (_startupCompleteRecorded || _startupTrace is not { IsComplete: false } || _sensorRowGrids.Count == 0)
+            return;
+
+        _startupCompleteRecorded = true;
+        _startupTrace.Complete("MainWindow.StartupComplete", GetRootSizeDetail());
+    }
+
+    private void RequestStartupTraceComplete()
+    {
+        _startupCompletionRequested = true;
+        if (!DispatcherQueue.TryEnqueue(CompleteStartupTraceIfReady))
+            CompleteStartupTraceIfReady();
+    }
+
+    private void DeviceColumnWidthSettleTimer_Tick(DispatcherQueueTimer sender, object args)
+    {
+        _deviceColumnWidthSettleTimer.Stop();
+        _deviceColumnWidthSettled = true;
+        UpdateSensorColumnWidths();
+    }
+
+    private void ScheduleDeviceColumnWidthSettle()
+    {
+        if (_sensorRowGrids.Count == 0)
+            return;
+
+        _deviceColumnWidthSettled = false;
+        _deviceColumnWidthSettleTimer.Stop();
+        _deviceColumnWidthSettleTimer.Start();
     }
 
     private static DataTemplate CreateTreeViewNodeContentTemplate()
@@ -1066,6 +1314,11 @@ public sealed class MainWindow : Window
 
     private void UpdateSensorColumnWidths()
     {
+        MeasureStartup("MainWindow.UpdateSensorColumnWidths", UpdateSensorColumnWidthsCore, () => FormattableString.Invariant($"rows={_sensorRowGrids.Count}, cacheEntries={_textMeasurementCache.Count}, deviceWidth={_sensorColumnWidths[0]:F0}, settled={_deviceColumnWidthSettled}"));
+    }
+
+    private void UpdateSensorColumnWidthsCore()
+    {
         double sensorWidth = MeasureText("Sensor", true) + SensorColumnPadding;
         double valueWidth = ViewModel.ShowValueColumn ? MeasureText("Value", true) + ValueColumnPadding : 0;
         double minWidth = ViewModel.ShowMinColumn ? MeasureText("Min", true) + ValueColumnPadding : 0;
@@ -1074,7 +1327,11 @@ public sealed class MainWindow : Window
         foreach (SensorTreeItemViewModel root in ViewModel.RootItems)
             MeasureSensorColumnWidths(root, 0, ref sensorWidth, ref valueWidth, ref minWidth, ref maxWidth);
 
-        _sensorColumnWidths[0] = Math.Ceiling(sensorWidth);
+        double deviceColumnWidth = NormalizeDeviceColumnWidth(sensorWidth);
+        if (!_deviceColumnWidthSettled)
+            deviceColumnWidth = Math.Max(deviceColumnWidth, _stableDeviceColumnWidth);
+
+        _sensorColumnWidths[0] = deviceColumnWidth;
         _sensorColumnWidths[1] = Math.Ceiling(valueWidth);
         _sensorColumnWidths[2] = Math.Ceiling(minWidth);
         _sensorColumnWidths[3] = Math.Ceiling(maxWidth);
@@ -1083,6 +1340,8 @@ public sealed class MainWindow : Window
             ApplySensorColumnWidths(_sensorHeader);
         foreach (Grid row in _sensorRowGrids)
             ApplySensorColumnWidths(row);
+
+        RecordDeviceColumnWidthIfChanged();
     }
 
     private void MeasureSensorColumnWidths(
@@ -1108,15 +1367,47 @@ public sealed class MainWindow : Window
             MeasureSensorColumnWidths(child, depth + 1, ref sensorWidth, ref valueWidth, ref minWidth, ref maxWidth);
     }
 
-    private static double MeasureText(string text, bool bold = false)
+    private double MeasureText(string text, bool bold = false)
     {
+        (string Text, bool Bold) key = (text, bold);
+        if (_textMeasurementCache.TryGetValue(key, out double width))
+            return width;
+
+        if (_textMeasurementCache.Count >= MaxTextMeasurementCacheEntries)
+            _textMeasurementCache.Clear();
+
         TextBlock textBlock = new()
         {
             Text = text,
             FontWeight = new global::Windows.UI.Text.FontWeight { Weight = bold ? (ushort)600 : (ushort)400 }
         };
         textBlock.Measure(new global::Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
-        return textBlock.DesiredSize.Width;
+        width = textBlock.DesiredSize.Width;
+        _textMeasurementCache[key] = width;
+        return width;
+    }
+
+    private static double NormalizeDeviceColumnWidth(double width)
+    {
+        if (!double.IsFinite(width))
+            width = DefaultSensorColumnWidth;
+
+        return Math.Ceiling(Math.Clamp(width, MinimumSensorColumnWidth, MaximumSensorColumnWidth));
+    }
+
+    private void RecordDeviceColumnWidthIfChanged()
+    {
+        if (!_deviceColumnWidthSettled || _sensorRowGrids.Count == 0)
+            return;
+
+        double measuredWidth = NormalizeDeviceColumnWidth(_sensorColumnWidths[0]);
+        _stableDeviceColumnWidth = measuredWidth;
+        double savedWidth = NormalizeDeviceColumnWidth(ViewModel.Settings.GetValue(DeviceColumnWidthSetting, DefaultSensorColumnWidth));
+        if (Math.Abs(measuredWidth - savedWidth) < 0.5)
+            return;
+
+        ViewModel.Settings.SetValue(DeviceColumnWidthSetting, measuredWidth);
+        _startupTrace?.Mark("MainWindow.RecordDeviceColumnWidth", FormattableString.Invariant($"width={measuredWidth:F0}, rows={_sensorRowGrids.Count}"));
     }
 
     private void ApplySensorColumnWidths(Grid grid)

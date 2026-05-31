@@ -137,6 +137,8 @@ public sealed class HardwareMonitorService : IDisposable
         await Computer.OpenAsync(cancellationToken).ConfigureAwait(false);
         _isOpen = true;
         RebuildTree(raiseTreeRebuilt);
+        await Computer.HardwareDiscoveryTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+        RebuildTree(raiseTreeRebuilt);
     }
 
     public void Reset()

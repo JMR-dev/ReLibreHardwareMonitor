@@ -19,7 +19,7 @@ using RAMSPDToolkit.Windows.Driver;
 
 namespace LibreHardwareMonitor.Hardware.Memory;
 
-internal class MemoryGroup : IGroup, IHardwareChanged
+internal class MemoryGroup : IGroup, IHardwareChanged, IHardwareDiscoveryTask
 {
     private const string DeferDimmDetectionEnvironmentVariable = "LHM_MEMORY_DEFER_DIMM_DETECTION";
     private const string DeferDimmDetectionSetting = "memory.deferDimmDetection";
@@ -28,6 +28,7 @@ internal class MemoryGroup : IGroup, IHardwareChanged
     private List<Hardware> _hardware = [];
 
     private CancellationTokenSource _cancellationTokenSource;
+    private Task _hardwareDiscoveryTask = Task.CompletedTask;
     private Exception _lastException;
     private bool _disposed = false;
 
@@ -72,6 +73,8 @@ internal class MemoryGroup : IGroup, IHardwareChanged
 #pragma warning restore 67
 
     public IReadOnlyList<IHardware> Hardware => _hardware;
+
+    public Task HardwareDiscoveryTask => _hardwareDiscoveryTask;
 
     public string GetReport()
     {
@@ -158,7 +161,7 @@ internal class MemoryGroup : IGroup, IHardwareChanged
         _cancellationTokenSource = new CancellationTokenSource();
         CancellationToken cancellationToken = _cancellationTokenSource.Token;
 
-        Task.Run(async () =>
+        _hardwareDiscoveryTask = Task.Run(async () =>
         {
             try
             {

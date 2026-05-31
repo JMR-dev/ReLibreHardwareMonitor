@@ -80,6 +80,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     private readonly Dictionary<string, PlotSeriesViewModel> _plotSeriesByIdentifier = new();
     private readonly RemoteWebServer _remoteWebServer;
     private readonly StartupService _startupService = new();
+    private readonly WinUiStartupTrace? _startupTrace;
     private AppThemeMode _themeMode;
     private int _loggingIntervalIndex;
     private PlotLocation _plotLocation;
@@ -92,6 +93,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     private bool _showPlot;
     private bool _showValueColumn;
     private bool _throttleAtaUpdate;
+    private bool _isHardwareLoading = true;
     private bool _isStarted;
     private bool _isStarting;
     private int _rootUpdateQueued;
@@ -99,9 +101,15 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     private TemperatureUnit _temperatureUnit;
     private int _updateIntervalIndex;
 
-    public MainWindowViewModel(AppSettings settings)
+    public MainWindowViewModel(AppSettings settings) : this(settings, null)
+    {
+    }
+
+    internal MainWindowViewModel(AppSettings settings, WinUiStartupTrace? startupTrace)
     {
         Settings = settings;
+        _startupTrace = startupTrace;
+        _startupTrace?.Mark("MainWindowViewModel.Constructor.Begin");
         _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
         _hardwareMonitor = new HardwareMonitorService(settings);
         _logger = new Logger(_hardwareMonitor.Computer);
@@ -131,6 +139,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         StorageDevice.ThrottleInterval = _throttleAtaUpdate ? TimeSpan.FromSeconds(30) : TimeSpan.Zero;
         _logger.LoggingInterval = LoggingIntervals[_loggingIntervalIndex];
         _logger.FileRotationMethod = (LoggerFileRotation)Math.Clamp(settings.GetValue("logger.fileRotation", 0), 0, 1);
+        _startupTrace?.Mark("MainWindowViewModel.Constructor.Complete");
     }
 
     public event EventHandler? PlotInvalidated;
@@ -530,6 +539,23 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
     public bool IsWebServerUnavailable => _remoteWebServer.PlatformNotSupported;
 
+    public bool IsHardwareInteractionEnabled => !IsHardwareLoading;
+
+    public bool IsHardwareLoading
+    {
+        get => _isHardwareLoading;
+        private set
+        {
+            if (!SetProperty(ref _isHardwareLoading, value))
+                return;
+
+            OnPropertyChanged(nameof(HardwareLoadingVisibility));
+            OnPropertyChanged(nameof(IsHardwareInteractionEnabled));
+        }
+    }
+
+    public Visibility HardwareLoadingVisibility => IsHardwareLoading ? Visibility.Visible : Visibility.Collapsed;
+
     public string WebServerUrl
     {
         get
@@ -675,16 +701,22 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         _isStarting = true;
         try
         {
+            IsHardwareLoading = true;
+            _startupTrace?.Mark("MainWindowViewModel.StartAsync.Begin");
             StatusText = "Initializing hardware sensors...";
-            await _hardwareMonitor.OpenAsync(raiseTreeRebuilt: false);
-            UpdateRoot();
-            ApplySensorValuesTimeWindow();
-            StartWebServerFromSettings();
-            UpdateStatus();
+            await MeasureStartupAsync("MainWindowViewModel.HardwareMonitor.OpenAsync", () => _hardwareMonitor.OpenAsync(raiseTreeRebuilt: false));
+            MeasureStartup("MainWindowViewModel.UpdateRoot", UpdateRoot, GetRootDetail);
+            StatusText = "Reading sensor values...";
+            await MeasureStartupAsync("MainWindowViewModel.InitialSensorValueUpdate", () => RefreshSensorValuesAsync(trackPlotPoints: false, logSensors: false));
+            MeasureStartup("MainWindowViewModel.StartWebServerFromSettings", StartWebServerFromSettings);
+            MeasureStartup("MainWindowViewModel.UpdateStatus", UpdateStatus, GetRootDetail);
             _isStarted = true;
+            _startupTrace?.Mark("MainWindowViewModel.StartAsync.Complete", GetRootDetail());
         }
         finally
         {
+            IsHardwareLoading = false;
+            _startupTrace?.Mark("MainWindowViewModel.HardwareLoadingComplete", GetRootDetail());
             _isStarting = false;
         }
     }
@@ -694,13 +726,19 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         if (!_isStarted)
             return;
 
+        await RefreshSensorValuesAsync(trackPlotPoints: true, logSensors: LogSensors);
+    }
+
+    private async Task RefreshSensorValuesAsync(bool trackPlotPoints, bool logSensors)
+    {
         await _hardwareMonitor.UpdateAsync();
 
         SensorTreeItemViewModel? root = RootItems.FirstOrDefault();
         root?.RefreshValues();
-        TrackPlotPoints();
+        if (trackPlotPoints)
+            TrackPlotPoints();
 
-        if (LogSensors)
+        if (logSensors)
             _logger.Log();
 
         UpdateStatus();
@@ -740,6 +778,54 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         TimeSpan timeWindow = SensorValuesTimeWindows[SensorValuesTimeWindowIndex];
         SensorVisitor visitor = new(sensor => sensor.ValuesTimeWindow = timeWindow);
         visitor.VisitComputer(_hardwareMonitor.Computer);
+    }
+
+    private string GetRootDetail()
+    {
+        int hardwareCount = _hardwareMonitor.Computer.Hardware.Count;
+        int sensorCount = RootItems.FirstOrDefault()?.EnumerateSensors().Count() ?? 0;
+        return $"{hardwareCount} hardware device(s), {sensorCount} sensor(s)";
+    }
+
+    private void MeasureStartup(string phase, Action action)
+    {
+        if (_startupTrace is not { IsComplete: false })
+        {
+            action();
+            return;
+        }
+
+        _startupTrace.Measure(phase, action);
+    }
+
+    private void MeasureStartup(string phase, Action action, Func<string> getDetail)
+    {
+        if (_startupTrace is not { IsComplete: false })
+        {
+            action();
+            return;
+        }
+
+        _startupTrace.Measure(phase, action, getDetail);
+    }
+
+    private T MeasureStartup<T>(string phase, Func<T> action)
+    {
+        if (_startupTrace is not { IsComplete: false })
+            return action();
+
+        return _startupTrace.Measure(phase, action);
+    }
+
+    private async Task MeasureStartupAsync(string phase, Func<Task> action)
+    {
+        if (_startupTrace is not { IsComplete: false })
+        {
+            await action();
+            return;
+        }
+
+        await _startupTrace.MeasureAsync(phase, action);
     }
 
     private void NotifyColumnVisibilityChanged()
@@ -822,11 +908,11 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
     private void UpdateRoot()
     {
-        RootItems.Clear();
-        SensorTreeItemViewModel root = _hardwareMonitor.Root;
-        root.Configure(TemperatureUnit, ShowHiddenSensors, ShowValueColumn, ShowMinColumn, ShowMaxColumn);
-        RootItems.Add(root);
-        ApplySensorValuesTimeWindow();
+        MeasureStartup("MainWindowViewModel.RootItems.Clear", RootItems.Clear);
+        SensorTreeItemViewModel root = MeasureStartup("MainWindowViewModel.GetHardwareRoot", () => _hardwareMonitor.Root);
+        MeasureStartup("MainWindowViewModel.ConfigureRoot", () => root.Configure(TemperatureUnit, ShowHiddenSensors, ShowValueColumn, ShowMinColumn, ShowMaxColumn), GetRootDetail);
+        MeasureStartup("MainWindowViewModel.RootItems.Add", () => RootItems.Add(root), GetRootDetail);
+        MeasureStartup("MainWindowViewModel.ApplySensorValuesTimeWindow", ApplySensorValuesTimeWindow, GetRootDetail);
     }
 
     private void UpdateStatus()

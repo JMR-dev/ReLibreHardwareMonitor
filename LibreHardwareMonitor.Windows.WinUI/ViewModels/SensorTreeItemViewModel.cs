@@ -176,13 +176,7 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
     public TemperatureUnit TemperatureUnit
     {
         get => _temperatureUnit;
-        private set
-        {
-            if (!SetProperty(ref _temperatureUnit, value))
-                return;
-
-            RefreshValues();
-        }
+        private set => SetProperty(ref _temperatureUnit, value);
     }
 
     public string Value => Sensor == null ? "" : SensorFormatter.FormatValue(Sensor, Sensor.Value, TemperatureUnit);
@@ -295,9 +289,8 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
 
     public void SetTemperatureUnit(TemperatureUnit temperatureUnit)
     {
-        TemperatureUnit = temperatureUnit;
-        foreach (SensorTreeItemViewModel child in Children)
-            child.SetTemperatureUnit(temperatureUnit);
+        if (SetTemperatureUnitCore(temperatureUnit))
+            RefreshValues();
     }
 
     private static SensorTreeItemViewModel FromSensor(ISensor sensor, AppSettings settings)
@@ -331,6 +324,15 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
 
         item.UpdateVisibilityState();
         return item;
+    }
+
+    private bool SetTemperatureUnitCore(TemperatureUnit temperatureUnit)
+    {
+        bool changed = SetProperty(ref _temperatureUnit, temperatureUnit, nameof(TemperatureUnit));
+        foreach (SensorTreeItemViewModel child in Children)
+            changed |= child.SetTemperatureUnitCore(temperatureUnit);
+
+        return changed;
     }
 
     private void UpdateVisibilityState()
