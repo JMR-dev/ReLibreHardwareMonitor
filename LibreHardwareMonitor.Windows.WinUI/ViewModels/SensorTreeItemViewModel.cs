@@ -30,6 +30,10 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
     private Visibility _valueColumnVisibility = Visibility.Visible;
     private Color? _penColor;
     private TemperatureUnit _temperatureUnit;
+    private string? _lastValue;
+    private string? _lastMin;
+    private string? _lastMax;
+    private string? _lastToolTip;
 
     private SensorTreeItemViewModel(SensorTreeItemKind kind, AppSettings? settings)
     {
@@ -259,10 +263,38 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
 
     public void RefreshValues()
     {
-        OnPropertyChanged(nameof(Value));
-        OnPropertyChanged(nameof(Min));
-        OnPropertyChanged(nameof(Max));
-        OnPropertyChanged(nameof(ToolTip));
+        // Value/Min/Max/ToolTip are computed (no backing field), so raise PropertyChanged only when the formatted text
+        // actually changed. Unconditionally notifying all four for every item on every update tick made the native
+        // binding engine re-marshal unchanged values across the boundary continuously — most sensors don't change each
+        // tick, so this cuts the per-tick interop churn (and its retained wrappers) by a large factor.
+        string value = Value;
+        if (value != _lastValue)
+        {
+            _lastValue = value;
+            OnPropertyChanged(nameof(Value));
+        }
+
+        string min = Min;
+        if (min != _lastMin)
+        {
+            _lastMin = min;
+            OnPropertyChanged(nameof(Min));
+        }
+
+        string max = Max;
+        if (max != _lastMax)
+        {
+            _lastMax = max;
+            OnPropertyChanged(nameof(Max));
+        }
+
+        string toolTip = ToolTip;
+        if (toolTip != _lastToolTip)
+        {
+            _lastToolTip = toolTip;
+            OnPropertyChanged(nameof(ToolTip));
+        }
+
         foreach (SensorTreeItemViewModel child in Children)
             child.RefreshValues();
     }
