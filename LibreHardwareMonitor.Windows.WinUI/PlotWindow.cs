@@ -4,6 +4,7 @@
 
 using System;
 using LibreHardwareMonitor.Windows.WinUI.Services;
+using LibreHardwareMonitor.Windows.WinUI.ViewModels;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -18,6 +19,7 @@ public sealed class PlotWindow : Window
 {
     private readonly AppSettings _settings;
     private readonly AppWindow _appWindow;
+    private readonly Grid _root;
     private bool _closingFromOwner;
 
     public PlotWindow(AppSettings settings)
@@ -28,14 +30,17 @@ public sealed class PlotWindow : Window
         _appWindow = AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(hwnd));
         _appWindow.Title = "Sensor Plot";
 
+        _root = new Grid();
         PlotCanvas = new Canvas
         {
             MinWidth = 320,
             MinHeight = 220,
-            Background = (Brush)Application.Current.Resources["SystemControlBackgroundAltHighBrush"]
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
         };
         PlotCanvas.SizeChanged += (_, _) => PlotSizeChanged?.Invoke(this, EventArgs.Empty);
-        Content = PlotCanvas;
+        _root.Children.Add(PlotCanvas);
+        Content = _root;
 
         RestoreBounds();
         Closed += PlotWindow_Closed;
@@ -46,6 +51,16 @@ public sealed class PlotWindow : Window
     public event EventHandler? UserClosed;
 
     public Canvas PlotCanvas { get; }
+
+    public void ApplyTheme(AppThemeMode themeMode)
+    {
+        _root.RequestedTheme = themeMode switch
+        {
+            AppThemeMode.Light => ElementTheme.Light,
+            AppThemeMode.Dark or AppThemeMode.Black => ElementTheme.Dark,
+            _ => ElementTheme.Default
+        };
+    }
 
     public void CloseFromOwner()
     {

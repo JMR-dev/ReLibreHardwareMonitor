@@ -62,6 +62,27 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         TimeSpan.FromHours(24)
     ];
 
+    private const int DefaultPlotTimeWindowIndex = 2;
+    private static readonly TimeSpan MaximumPlotPointRetention = TimeSpan.FromHours(24);
+    private static readonly TimeSpan MaximumSyntheticPlotPointRetention = TimeSpan.FromMinutes(5);
+
+    private static readonly TimeSpan?[] PlotTimeWindows =
+    [
+        null,
+        TimeSpan.FromMinutes(5),
+        TimeSpan.FromMinutes(10),
+        TimeSpan.FromMinutes(20),
+        TimeSpan.FromMinutes(30),
+        TimeSpan.FromMinutes(45),
+        TimeSpan.FromHours(1),
+        TimeSpan.FromMinutes(90),
+        TimeSpan.FromHours(2),
+        TimeSpan.FromHours(3),
+        TimeSpan.FromHours(6),
+        TimeSpan.FromHours(12),
+        TimeSpan.FromHours(24)
+    ];
+
     private static readonly Color[] PlotColors =
     [
         Color.FromArgb(255, 0x00, 0x78, 0xD4),
@@ -84,12 +105,17 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     private AppThemeMode _themeMode;
     private int _loggingIntervalIndex;
     private PlotLocation _plotLocation;
+    private bool _plotStackedAxes;
     private double _plotStrokeThickness;
+    private bool _plotTimeAxisZoomEnabled;
+    private int _plotTimeWindowIndex;
+    private bool _plotValueAxesZoomEnabled;
     private SensorTreeItemViewModel? _selectedItem;
     private int _sensorValuesTimeWindowIndex;
     private bool _showHiddenSensors;
     private bool _showMaxColumn;
     private bool _showMinColumn;
+    private bool _showPlotAxisLabels;
     private bool _showPlot;
     private bool _showValueColumn;
     private bool _throttleAtaUpdate;
@@ -132,6 +158,12 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         _showPlot = settings.GetValue("plotMenuItem", false);
         _plotLocation = (PlotLocation)Math.Clamp(settings.GetValue("plotLocation", 0), 0, 2);
         _plotStrokeThickness = Math.Clamp(settings.GetValue("plotStroke", 1) + 1, 1, 4);
+        _plotStackedAxes = settings.GetValue("stackedAxes", true);
+        _showPlotAxisLabels = settings.GetValue("showAxesLabels", true);
+        _plotTimeAxisZoomEnabled = settings.GetValue("timeAxisEnableZoom", true);
+        _plotValueAxesZoomEnabled = settings.GetValue("yAxesEnableZoom", true);
+        int plotTimeWindowDefault = GetPlotTimeWindowIndex(settings.GetValue("plotPanel.MaxTimeSpan", 10.0f * 60));
+        _plotTimeWindowIndex = Math.Clamp(settings.GetValue("plotTimeWindow", plotTimeWindowDefault), 0, PlotTimeWindows.Length - 1);
         _temperatureUnit = (TemperatureUnit)Math.Clamp(settings.GetValue("TemperatureUnit", 0), 0, 1);
         _updateIntervalIndex = Math.Clamp(settings.GetValue("updateIntervalMenuItem", 2), 0, UpdateIntervals.Length - 1);
         _loggingIntervalIndex = Math.Clamp(settings.GetValue("loggingInterval", 0), 0, LoggingIntervals.Length - 1);
@@ -451,6 +483,19 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
     public int PlotGridRowSpan => PlotLocation == PlotLocation.Right ? 2 : 1;
 
+    public bool PlotStackedAxes
+    {
+        get => _plotStackedAxes;
+        set
+        {
+            if (!SetProperty(ref _plotStackedAxes, value))
+                return;
+
+            Settings.SetValue("stackedAxes", value);
+            PlotInvalidated?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
     public double PlotStrokeThickness
     {
         get => _plotStrokeThickness;
@@ -462,6 +507,49 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
             Settings.SetValue("plotStroke", (int)value - 1);
             PlotInvalidated?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    public TimeSpan? PlotTimeWindow => PlotTimeWindows[PlotTimeWindowIndex];
+
+    public bool PlotTimeAxisZoomEnabled
+    {
+        get => _plotTimeAxisZoomEnabled;
+        set
+        {
+            if (!SetProperty(ref _plotTimeAxisZoomEnabled, value))
+                return;
+
+            Settings.SetValue("timeAxisEnableZoom", value);
+        }
+    }
+
+    public int PlotTimeWindowIndex
+    {
+        get => _plotTimeWindowIndex;
+        set
+        {
+            value = Math.Clamp(value, 0, PlotTimeWindows.Length - 1);
+            if (!SetProperty(ref _plotTimeWindowIndex, value))
+                return;
+
+            Settings.SetValue("plotTimeWindow", value);
+            Settings.SetValue("plotPanel.MinTimeSpan", 0.0f);
+            Settings.SetValue("plotPanel.MaxTimeSpan", PlotTimeWindow.HasValue ? (float)PlotTimeWindow.Value.TotalSeconds : float.NaN);
+            OnPropertyChanged(nameof(PlotTimeWindow));
+            PlotInvalidated?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    public bool PlotValueAxesZoomEnabled
+    {
+        get => _plotValueAxesZoomEnabled;
+        set
+        {
+            if (!SetProperty(ref _plotValueAxesZoomEnabled, value))
+                return;
+
+            Settings.SetValue("yAxesEnableZoom", value);
         }
     }
 
@@ -501,6 +589,19 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
             Settings.SetValue("minMenuItem", value);
             NotifyColumnVisibilityChanged();
+        }
+    }
+
+    public bool ShowPlotAxisLabels
+    {
+        get => _showPlotAxisLabels;
+        set
+        {
+            if (!SetProperty(ref _showPlotAxisLabels, value))
+                return;
+
+            Settings.SetValue("showAxesLabels", value);
+            PlotInvalidated?.Invoke(this, EventArgs.Empty);
         }
     }
 
@@ -670,6 +771,12 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         PlotInvalidated?.Invoke(this, EventArgs.Empty);
     }
 
+    public void RefreshPlotSeries()
+    {
+        TrackPlotPoints();
+        PlotInvalidated?.Invoke(this, EventArgs.Empty);
+    }
+
     public void Save()
     {
         Settings.Save();
@@ -762,7 +869,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
             await MeasureStartupAsync("MainWindowViewModel.HardwareMonitor.OpenAsync", () => _hardwareMonitor.OpenAsync(raiseTreeRebuilt: false));
             MeasureStartup("MainWindowViewModel.UpdateRoot", UpdateRoot, GetRootDetail);
             StatusText = "Reading sensor values...";
-            await MeasureStartupAsync("MainWindowViewModel.InitialSensorValueUpdate", () => RefreshSensorValuesAsync(trackPlotPoints: false, logSensors: false));
+            await MeasureStartupAsync("MainWindowViewModel.InitialSensorValueUpdate", () => RefreshSensorValuesAsync(trackPlotPoints: true, logSensors: false));
             MeasureStartup("MainWindowViewModel.StartWebServerFromSettings", StartWebServerFromSettings);
             MeasureStartup("MainWindowViewModel.UpdateStatus", UpdateStatus, GetRootDetail);
             _isStarted = true;
@@ -942,33 +1049,74 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         if (root == null)
             return;
 
-        DateTime now = DateTime.Now;
+        DateTime now = DateTime.UtcNow;
         HashSet<string> selectedIdentifiers = new();
         foreach (SensorTreeItemViewModel sensorItem in root.EnumerateSensors().Where(sensorItem => sensorItem.Plot && sensorItem.Sensor != null))
         {
             ISensor sensor = sensorItem.Sensor!;
             string identifier = sensor.Identifier.ToString();
             selectedIdentifiers.Add(identifier);
-            double? value = SensorFormatter.GetPlotValue(sensor, TemperatureUnit);
-            if (!value.HasValue)
-                continue;
 
             if (!_plotSeriesByIdentifier.TryGetValue(identifier, out PlotSeriesViewModel? series))
             {
-                series = new PlotSeriesViewModel(identifier, sensor.Name, GetPlotColor(sensorItem));
+                series = new PlotSeriesViewModel(
+                    identifier,
+                    sensor.Hardware.Name,
+                    sensor.Name,
+                    sensor.SensorType,
+                    SensorFormatter.GetPlotUnit(sensor.SensorType, TemperatureUnit),
+                    GetPlotColor(sensorItem));
                 _plotSeriesByIdentifier[identifier] = series;
                 PlotSeries.Add(series);
             }
-            else if (sensorItem.PenColor.HasValue)
+            else
             {
+                series.UpdateMetadata(sensor.Hardware.Name, sensor.Name, sensor.SensorType, SensorFormatter.GetPlotUnit(sensor.SensorType, TemperatureUnit));
+
                 // Only honor an explicit user pen color for an existing series; keep the auto-assigned color stable.
                 // (Recomputing it from the live series count made existing lines shift/collide colors every tick.)
-                series.Color = sensorItem.PenColor.Value;
+                if (sensorItem.PenColor.HasValue)
+                    series.Color = sensorItem.PenColor.Value;
             }
 
-            series.Points.Add(new PlotPointViewModel(now, value.Value));
-            while (series.Points.Count > 0 && now - series.Points[0].Timestamp > TimeSpan.FromHours(24))
-                series.Points.RemoveAt(0);
+            List<PlotPointViewModel> points = [];
+            foreach (SensorValue sensorValue in sensor.Values.OrderBy(value => value.Time))
+            {
+                double? displayedValue = SensorFormatter.GetPlotValue(sensor, sensorValue.Value, TemperatureUnit);
+                if (displayedValue is not { } pointValue || !double.IsFinite(pointValue))
+                    continue;
+
+                points.Add(new PlotPointViewModel(sensorValue.Time, pointValue));
+            }
+
+            DateTime? latestHistoryTimestamp = points.Count > 0 ? points[^1].Timestamp : null;
+            foreach (PlotPointViewModel existingPoint in series.Points)
+            {
+                if (now - existingPoint.Timestamp > MaximumSyntheticPlotPointRetention)
+                    continue;
+
+                if (!latestHistoryTimestamp.HasValue || existingPoint.Timestamp > latestHistoryTimestamp.Value)
+                    points.Add(existingPoint);
+            }
+
+            double? currentValue = SensorFormatter.GetPlotValue(sensor, TemperatureUnit);
+            if (currentValue is { } currentPointValue && double.IsFinite(currentPointValue))
+                points.Add(new PlotPointViewModel(now, currentPointValue));
+
+            DateTime cutoff = now - MaximumPlotPointRetention;
+            points = points
+                .Where(point => point.Timestamp >= cutoff)
+                .GroupBy(point => point.Timestamp.Ticks)
+                .Select(group => group.Last())
+                .OrderBy(point => point.Timestamp)
+                .ToList();
+
+            if (points.Count == 0 && currentValue is { } fallbackPointValue && double.IsFinite(fallbackPointValue))
+            {
+                points.Add(new PlotPointViewModel(now, fallbackPointValue));
+            }
+
+            series.ReplacePoints(points);
         }
 
         foreach (string identifier in _plotSeriesByIdentifier.Keys.Where(identifier => !selectedIdentifiers.Contains(identifier)).ToArray())
@@ -1051,6 +1199,30 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
             AppThemeMode.Black => "black",
             _ => "auto"
         };
+    }
+
+    private static int GetPlotTimeWindowIndex(float maxSeconds)
+    {
+        if (!float.IsFinite(maxSeconds))
+            return 0;
+
+        int bestIndex = DefaultPlotTimeWindowIndex;
+        double bestDistance = double.MaxValue;
+        for (int i = 1; i < PlotTimeWindows.Length; i++)
+        {
+            TimeSpan? timeWindow = PlotTimeWindows[i];
+            if (!timeWindow.HasValue)
+                continue;
+
+            double distance = Math.Abs(timeWindow.Value.TotalSeconds - maxSeconds);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                bestIndex = i;
+            }
+        }
+
+        return bestIndex;
     }
 
     private static string FormatInterval(TimeSpan interval)

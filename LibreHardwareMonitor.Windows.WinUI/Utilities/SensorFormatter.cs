@@ -76,7 +76,11 @@ public static class SensorFormatter
 
     public static double? GetPlotValue(ISensor sensor, TemperatureUnit temperatureUnit)
     {
-        float? value = sensor.Value;
+        return GetPlotValue(sensor, sensor.Value, temperatureUnit);
+    }
+
+    public static double? GetPlotValue(ISensor sensor, float? value, TemperatureUnit temperatureUnit)
+    {
         if (!value.HasValue)
             return null;
 
@@ -84,6 +88,36 @@ public static class SensorFormatter
             return CelsiusToFahrenheit(value.Value);
 
         return value.Value;
+    }
+
+    public static string GetPlotUnit(SensorType sensorType, TemperatureUnit temperatureUnit)
+    {
+        return sensorType switch
+        {
+            SensorType.Voltage => "V",
+            SensorType.Current => "A",
+            SensorType.Clock => "MHz",
+            SensorType.Load => "%",
+            SensorType.Temperature when temperatureUnit == TemperatureUnit.Fahrenheit => "\u00B0F",
+            SensorType.Temperature => "\u00B0C",
+            SensorType.Fan => "RPM",
+            SensorType.Flow => "L/h",
+            SensorType.Control => "%",
+            SensorType.Level => "%",
+            SensorType.Power => "W",
+            SensorType.Data => "GB",
+            SensorType.SmallData => "MB",
+            SensorType.Factor => "1",
+            SensorType.Frequency => "Hz",
+            SensorType.Throughput => "B/s",
+            SensorType.TimeSpan => "s",
+            SensorType.Timing => "ns",
+            SensorType.Energy => "mWh",
+            SensorType.Noise => "dBA",
+            SensorType.Conductivity => "\u00B5S/cm",
+            SensorType.Humidity => "%",
+            _ => ""
+        };
     }
 
     public static string GetToolTip(ISensor sensor, TemperatureUnit temperatureUnit)

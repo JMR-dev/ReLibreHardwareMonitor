@@ -1,5 +1,6 @@
 using System;
 using System.ComponentModel;
+using LibreHardwareMonitor.Hardware;
 using Windows.UI;
 using LibreHardwareMonitor.Windows.WinUI.ViewModels;
 using Xunit;
@@ -78,10 +79,14 @@ public class SimpleViewModelsTests
     public void PlotSeriesViewModel_Constructor_SetsProperties()
     {
         var color = Color.FromArgb(255, 255, 0, 0);
-        var vm = new PlotSeriesViewModel("sensor1", "Sensor Name", color);
+        var vm = new PlotSeriesViewModel("sensor1", "Hardware Name", "Sensor Name", SensorType.Temperature, "\u00B0C", color);
 
         Assert.Equal("sensor1", vm.SensorIdentifier);
+        Assert.Equal("Hardware Name", vm.HardwareName);
         Assert.Equal("Sensor Name", vm.Name);
+        Assert.Equal(SensorType.Temperature, vm.SensorType);
+        Assert.Equal("\u00B0C", vm.Unit);
+        Assert.Equal("Hardware Name Sensor Name", vm.Title);
         Assert.Equal(color, vm.Color);
         Assert.NotNull(vm.Points);
         Assert.Empty(vm.Points);
@@ -92,10 +97,27 @@ public class SimpleViewModelsTests
     {
         var color1 = Color.FromArgb(255, 255, 0, 0);
         var color2 = Color.FromArgb(255, 0, 255, 0);
-        var vm = new PlotSeriesViewModel("sensor1", "Sensor Name", color1);
+        var vm = new PlotSeriesViewModel("sensor1", "Hardware Name", "Sensor Name", SensorType.Temperature, "\u00B0C", color1);
 
         vm.Color = color2;
 
         Assert.Equal(color2, vm.Color);
+    }
+
+    [Fact]
+    public void PlotSeriesViewModel_ReplacePoints_ReplacesExistingPoints()
+    {
+        var color = Color.FromArgb(255, 255, 0, 0);
+        var vm = new PlotSeriesViewModel("sensor1", "Hardware Name", "Sensor Name", SensorType.Temperature, "\u00B0C", color);
+        vm.Points.Add(new PlotPointViewModel(new DateTime(2023, 1, 1), 1));
+
+        vm.ReplacePoints([
+            new PlotPointViewModel(new DateTime(2023, 1, 2), 2),
+            new PlotPointViewModel(new DateTime(2023, 1, 3), 3)
+        ]);
+
+        Assert.Equal(2, vm.Points.Count);
+        Assert.Equal(2, vm.Points[0].Value);
+        Assert.Equal(3, vm.Points[1].Value);
     }
 }

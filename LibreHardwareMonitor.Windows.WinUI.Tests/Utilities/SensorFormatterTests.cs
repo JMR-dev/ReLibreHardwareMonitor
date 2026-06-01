@@ -144,6 +144,29 @@ public class SensorFormatterTests
         Assert.Equal(25.5f, result);
     }
 
+    [Fact]
+    public void GetPlotValue_HistoricalTemperatureFahrenheit_ReturnsConvertedValue()
+    {
+        var mockSensor = new Mock<ISensor>();
+        mockSensor.Setup(s => s.SensorType).Returns(SensorType.Temperature);
+
+        var result = SensorFormatter.GetPlotValue(mockSensor.Object, 25.5f, TemperatureUnit.Fahrenheit);
+
+        Assert.Equal(77.9, result.Value, 1);
+    }
+
+    [Fact]
+    public void GetPlotUnit_TemperatureFahrenheit_ReturnsFahrenheitUnit()
+    {
+        Assert.Equal("\u00B0F", SensorFormatter.GetPlotUnit(SensorType.Temperature, TemperatureUnit.Fahrenheit));
+    }
+
+    [Fact]
+    public void GetPlotUnit_Load_ReturnsPercentUnit()
+    {
+        Assert.Equal("%", SensorFormatter.GetPlotUnit(SensorType.Load, TemperatureUnit.Celsius));
+    }
+
     // A mock interface combining ISensor and ICriticalSensorLimits for testing
     public interface ICriticalSensorMock : ISensor, ICriticalSensorLimits, ISensorLimits
     {
