@@ -6,6 +6,7 @@
 .vs/
 .vscode/
 packages/
-
+.antigravity
+.claude
 # Local debug launch profile (per-developer env vars, not committed)
 LibreHardwareMonitor.Windows.WinUI/Properties/launchSettings.json
