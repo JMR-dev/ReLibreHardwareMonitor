@@ -788,7 +788,10 @@ public sealed class MainWindow : Window
         IntPtr hwnd = WindowNative.GetWindowHandle(this);
         _isMainWindowHidden = false;
         ShowWindow(hwnd, ShowWindowShow);
-        ShowWindow(hwnd, ShowWindowRestore);
+        // Only un-minimize. The window is hidden to the tray with SW_HIDE while keeping its maximized state, so
+        // SW_SHOW alone brings it back as it was; an unconditional SW_RESTORE would also un-maximize it.
+        if (IsIconic(hwnd))
+            ShowWindow(hwnd, ShowWindowRestore);
         Activate();
     }
 
@@ -1542,14 +1545,26 @@ public sealed class MainWindow : Window
 
     private void RestoreWindowBounds()
     {
-        int width = Math.Max(470, ViewModel.Settings.GetValue("mainForm.Width", 760));
-        int height = Math.Max(640, ViewModel.Settings.GetValue("mainForm.Height", 680));
+        // AppWindow.Resize takes physical pixels and the app is PerMonitorV2 DPI-aware, so the logical default/minimum
+        // sizes must be scaled by the window's DPI. Without this, on a high-DPI display (e.g. a 200% laptop panel) the
+        // window — and any SW_RESTORE from the tray, which un-maximizes to this size — came out at half size.
+        double scale = GetWindowScale();
+        int minWidth = (int)Math.Round(470 * scale);
+        int minHeight = (int)Math.Round(640 * scale);
+        int width = Math.Max(minWidth, ViewModel.Settings.GetValue("mainForm.Width", (int)Math.Round(760 * scale)));
+        int height = Math.Max(minHeight, ViewModel.Settings.GetValue("mainForm.Height", (int)Math.Round(680 * scale)));
         _appWindow.Resize(new SizeInt32(width, height));
 
         int x = ViewModel.Settings.GetValue("mainForm.Location.X", int.MinValue);
         int y = ViewModel.Settings.GetValue("mainForm.Location.Y", int.MinValue);
         if (x != int.MinValue && y != int.MinValue)
             _appWindow.Move(new PointInt32(x, y));
+    }
+
+    private double GetWindowScale()
+    {
+        uint dpi = GetDpiForWindow(WindowNative.GetWindowHandle(this));
+        return dpi == 0 ? 1.0 : dpi / 96.0;
     }
 
     private void MaximizeWindow()
@@ -1786,6 +1801,9 @@ public sealed class MainWindow : Window
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsIconic(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr windowHandle);
 
     private sealed record ParameterEditorRow(IParameter Parameter, Grid Container, CheckBox UseDefault, TextBox Value);
 
