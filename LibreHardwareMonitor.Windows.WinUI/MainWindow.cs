@@ -59,6 +59,7 @@ public sealed class MainWindow : Window
     private readonly WinUiStartupTrace? _startupTrace;
     private readonly TrayIconService _trayIconService;
     private readonly Dictionary<(string Text, bool Bold), double> _textMeasurementCache = new();
+    private TextBlock? _measurementTextBlock;
     private readonly List<Grid> _sensorRowGrids = [];
     private readonly double[] _sensorColumnWidths = [DefaultSensorColumnWidth, 120, 120, 120];
     private PlotWindow? _plotWindow;
@@ -1646,13 +1647,14 @@ public sealed class MainWindow : Window
         if (_textMeasurementCache.Count >= MaxTextMeasurementCacheEntries)
             _textMeasurementCache.Clear();
 
-        TextBlock textBlock = new()
-        {
-            Text = text,
-            FontWeight = new global::Windows.UI.Text.FontWeight { Weight = bold ? (ushort)600 : (ushort)400 }
-        };
-        textBlock.Measure(new global::Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
-        width = textBlock.DesiredSize.Width;
+        // Reuse a single TextBlock for measurement instead of allocating one per cache miss. This runs for every
+        // sensor's Value/Min/Max on each update tick, and the frequently-changing value strings miss the cache, so the
+        // old code created and discarded a WinUI element (with a native peer) on nearly every call — avoidable churn.
+        _measurementTextBlock ??= new TextBlock();
+        _measurementTextBlock.Text = text;
+        _measurementTextBlock.FontWeight = new global::Windows.UI.Text.FontWeight { Weight = bold ? (ushort)600 : (ushort)400 };
+        _measurementTextBlock.Measure(new global::Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+        width = _measurementTextBlock.DesiredSize.Width;
         _textMeasurementCache[key] = width;
         return width;
     }
