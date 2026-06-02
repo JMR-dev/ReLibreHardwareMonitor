@@ -59,9 +59,8 @@ public sealed class MainWindow : Window
     private TextBlock? _measurementTextBlock;
     private readonly List<Grid> _sensorRowGrids = [];
     private readonly double[] _sensorColumnWidths = [DefaultSensorColumnWidth, 120, 120, 120];
-    private PlotWindow? _plotWindow;
+    private readonly SecondaryWindowCoordinator _secondaryWindows;
     private Grid? _sensorHeader;
-    private SensorGadgetWindow? _gadgetWindow;
     private double _stableDeviceColumnWidth = DefaultSensorColumnWidth;
     private bool _deviceColumnWidthSettled;
     private bool _firstLayoutRecorded;
@@ -106,6 +105,7 @@ public sealed class MainWindow : Window
             () => ViewModel.TemperatureUnit));
         _trayIconService.IsMainIconEnabled = ViewModel.MinimizeToTray;
         _dialogService = new DialogService(() => Content.XamlRoot, ViewModel, WindowNative.GetWindowHandle(this));
+        _secondaryWindows = new SecondaryWindowCoordinator(ViewModel, HideShowMainWindow);
 
         Grid root = MeasureStartup("MainWindow.BuildRoot", BuildRoot);
         MeasureStartup("MainWindow.AssignContent", () => Content = root);
@@ -653,7 +653,7 @@ public sealed class MainWindow : Window
 
             UpdateSensorColumnWidths();
             _trayIconService.Update();
-            _gadgetWindow?.UpdateSensors(ViewModel.GetGadgetSensorItems());
+            _secondaryWindows.SyncGadgetSensors();
             DrawPlot();
         }
         catch (Exception ex)
@@ -711,7 +711,7 @@ public sealed class MainWindow : Window
         _timer.Stop();
         _deviceColumnWidthSettleTimer.Stop();
         _trayIconService.Dispose();
-        CloseSecondaryWindows();
+        _secondaryWindows.CloseAll();
         _placementService.Save();
         ViewModel.Dispose();
         _startupTrace?.Dispose();
@@ -740,23 +740,6 @@ public sealed class MainWindow : Window
     {
         _isClosingForExit = true;
         Close();
-    }
-
-    private void CloseSecondaryWindows()
-    {
-        if (_gadgetWindow != null)
-        {
-            SensorGadgetWindow gadgetWindow = _gadgetWindow;
-            _gadgetWindow = null;
-            gadgetWindow.CloseFromOwner();
-        }
-
-        if (_plotWindow != null)
-        {
-            PlotWindow plotWindow = _plotWindow;
-            _plotWindow = null;
-            plotWindow.CloseFromOwner();
-        }
     }
 
     private void HideShowMainWindow()
@@ -792,62 +775,17 @@ public sealed class MainWindow : Window
 
     private void SyncGadgetSensors()
     {
-        _gadgetWindow?.UpdateSensors(ViewModel.GetGadgetSensorItems());
+        _secondaryWindows.SyncGadgetSensors();
     }
 
     private void UpdateGadgetVisibility()
     {
-        if (ViewModel.ShowGadget)
-        {
-            if (_gadgetWindow == null)
-            {
-                _gadgetWindow = new SensorGadgetWindow(ViewModel);
-                _gadgetWindow.HideShowMainWindowRequested += (_, _) => HideShowMainWindow();
-                _gadgetWindow.UserClosed += (_, _) =>
-                {
-                    _gadgetWindow = null;
-                    ViewModel.ShowGadget = false;
-                };
-                SyncGadgetSensors();
-                _gadgetWindow.Activate();
-            }
-
-            return;
-        }
-
-        if (_gadgetWindow != null)
-        {
-            SensorGadgetWindow gadgetWindow = _gadgetWindow;
-            _gadgetWindow = null;
-            gadgetWindow.CloseFromOwner();
-        }
+        _secondaryWindows.UpdateGadgetVisibility();
     }
 
     private void UpdatePlotWindowVisibility()
     {
-        if (ViewModel.IsPlotWindowVisible)
-        {
-            if (_plotWindow == null)
-            {
-                _plotWindow = new PlotWindow(ViewModel.Settings, ViewModel);
-                _plotWindow.ApplyTheme(ViewModel.ThemeMode);
-                _plotWindow.UserClosed += (_, _) =>
-                {
-                    _plotWindow = null;
-                    ViewModel.ShowPlot = false;
-                };
-                _plotWindow.Activate();
-            }
-
-            return;
-        }
-
-        if (_plotWindow != null)
-        {
-            PlotWindow plotWindow = _plotWindow;
-            _plotWindow = null;
-            plotWindow.CloseFromOwner();
-        }
+        _secondaryWindows.UpdatePlotWindowVisibility();
     }
 
     private void RebuildSensorTree()
@@ -1102,7 +1040,7 @@ public sealed class MainWindow : Window
     {
         ViewModel.ResetPlot();
         _plotView.ResetZoom();
-        _plotWindow?.RedrawPlot();
+        _secondaryWindows.RedrawPlot();
     }
 
     private void DrawPlot()
@@ -1112,7 +1050,7 @@ public sealed class MainWindow : Window
         else
             _plotView.Redraw();
 
-        _plotWindow?.RedrawPlot();
+        _secondaryWindows.RedrawPlot();
     }
 
     private void UpdatePlotLayout()
@@ -1148,7 +1086,7 @@ public sealed class MainWindow : Window
         };
 
         _plotView.ApplyTheme(ViewModel.ThemeMode);
-        _plotWindow?.ApplyTheme(ViewModel.ThemeMode);
+        _secondaryWindows.ApplyTheme(ViewModel.ThemeMode);
     }
 
     private void UpdateSensorColumnWidths()
