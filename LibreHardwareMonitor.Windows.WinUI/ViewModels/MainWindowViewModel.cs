@@ -103,6 +103,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     private bool _showMaxColumn;
     private bool _showMinColumn;
     private bool _showPlotAxisLabels;
+    private bool _showPlotLegend;
     private bool _showPlot;
     private bool _showValueColumn;
     private bool _throttleAtaUpdate;
@@ -148,6 +149,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         _plotStrokeThickness = Math.Clamp(settings.GetValue("plotStroke", 1) + 1, 1, 4);
         _plotStackedAxes = settings.GetValue("stackedAxes", true);
         _showPlotAxisLabels = settings.GetValue("showAxesLabels", true);
+        _showPlotLegend = settings.GetValue("showPlotLegend", true);
         _plotTimeAxisZoomEnabled = settings.GetValue("timeAxisEnableZoom", true);
         _plotValueAxesZoomEnabled = settings.GetValue("yAxesEnableZoom", true);
         int plotTimeWindowDefault = GetPlotTimeWindowIndex(settings.GetValue("plotPanel.MaxTimeSpan", 10.0f * 60));
@@ -186,6 +188,8 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     public bool IsPlotWindowVisible => ShowPlot && PlotLocation == PlotLocation.Window;
 
     public Visibility PlotVisibility => ShowPlot && PlotLocation != PlotLocation.Window ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility ShowPlotLegendMenuVisibility => ShowPlot ? Visibility.Visible : Visibility.Collapsed;
 
     public ObservableCollection<SensorTreeItemViewModel> RootItems { get; } = [];
 
@@ -601,6 +605,19 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         }
     }
 
+    public bool ShowPlotLegend
+    {
+        get => _showPlotLegend;
+        set
+        {
+            if (!SetProperty(ref _showPlotLegend, value))
+                return;
+
+            Settings.SetValue("showPlotLegend", value);
+            PlotInvalidated?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
     public bool ShowPlot
     {
         get => _showPlot;
@@ -611,6 +628,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
             Settings.SetValue("plotMenuItem", value);
             OnPropertyChanged(nameof(PlotVisibility));
+            OnPropertyChanged(nameof(ShowPlotLegendMenuVisibility));
             OnPropertyChanged(nameof(IsPlotWindowVisible));
             NotifyPlotLayoutChanged();
             PlotInvalidated?.Invoke(this, EventArgs.Empty);

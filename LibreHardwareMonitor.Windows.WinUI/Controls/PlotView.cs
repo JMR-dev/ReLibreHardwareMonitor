@@ -207,6 +207,9 @@ public sealed class PlotView : Grid
             foreach (PlotSeriesSample sample in samples)
                 DrawPlotSeries(_canvas, bounds, axis, minTimestamp, maxTimestamp, sample);
         }
+
+        if (VM.ShowPlotLegend)
+            DrawLegend(_canvas, bounds, visibleSeries);
     }
 
     private MenuFlyout BuildPlotContextMenu()
@@ -214,6 +217,7 @@ public sealed class PlotView : Grid
         MenuFlyout flyout = new();
         flyout.Items.Add(CreateToggleSettingItem("Stacked Axes", () => VM.PlotStackedAxes, value => VM.PlotStackedAxes = value));
         flyout.Items.Add(CreateToggleSettingItem("Show Axes Labels", () => VM.ShowPlotAxisLabels, value => VM.ShowPlotAxisLabels = value));
+        flyout.Items.Add(CreateToggleSettingItem("Show Legend", () => VM.ShowPlotLegend, value => VM.ShowPlotLegend = value));
 
         MenuFlyoutSubItem timeAxis = new() { Text = "Time Axis" };
         timeAxis.Items.Add(CreateToggleSettingItem("Enable Zoom", () => VM.PlotTimeAxisZoomEnabled, value => VM.PlotTimeAxisZoomEnabled = value));
@@ -473,6 +477,158 @@ public sealed class PlotView : Grid
         Canvas.SetLeft(label, bounds.Left + Math.Max(0, (bounds.Width - label.DesiredSize.Width) / 2));
         Canvas.SetTop(label, bounds.Top + Math.Max(0, (bounds.Height - label.DesiredSize.Height) / 2));
         canvas.Children.Add(label);
+    }
+
+    private const int LegendMaxRows = 12;
+    private const double LegendMinPlotWidth = 200;
+    private const double LegendSwatchSize = 12;
+    private const double LegendRowSpacing = 4;
+    private const double LegendColumnSpacing = 10;
+    private const double LegendPadding = 8;
+    private const double LegendInset = 8;
+    private const double LegendFontSize = 11;
+
+    private void DrawLegend(Canvas canvas, PlotBounds bounds, IReadOnlyList<PlotSeriesSample> visibleSeries)
+    {
+        if (visibleSeries.Count == 0 || bounds.Width < LegendMinPlotWidth)
+            return;
+
+        PlotSeriesSample[] shown = visibleSeries.Take(LegendMaxRows).ToArray();
+        int overflow = visibleSeries.Count - shown.Length;
+        SolidColorBrush textBrush = new(GetPlotTextColor());
+
+        TextBlock[] labelBlocks = new TextBlock[shown.Length];
+        TextBlock[] valueBlocks = new TextBlock[shown.Length];
+        double[] labelDesiredWidths = new double[shown.Length];
+        double valueColumnWidth = 0;
+        double rowHeight = 0;
+
+        for (int i = 0; i < shown.Length; i++)
+        {
+            PlotSeriesSample sample = shown[i];
+            TextBlock label = CreatePlotLabel(sample.Series.Title, textBrush, LegendFontSize);
+            label.Measure(new global::Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+            labelBlocks[i] = label;
+            labelDesiredWidths[i] = label.DesiredSize.Width;
+
+            string valueText = FormatLegendValue(sample.Points[^1].Value, sample.Series.Unit);
+            TextBlock value = CreatePlotLabel(valueText, textBrush, LegendFontSize, 600);
+            value.Measure(new global::Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+            valueBlocks[i] = value;
+            valueColumnWidth = Math.Max(valueColumnWidth, value.DesiredSize.Width);
+
+            rowHeight = Math.Max(rowHeight, Math.Max(label.DesiredSize.Height, value.DesiredSize.Height));
+        }
+
+        TextBlock? overflowBlock = null;
+        if (overflow > 0)
+        {
+            overflowBlock = CreatePlotLabel($"+{overflow} more", textBrush, LegendFontSize);
+            overflowBlock.Measure(new global::Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+            rowHeight = Math.Max(rowHeight, overflowBlock.DesiredSize.Height);
+        }
+
+        rowHeight = Math.Max(rowHeight, LegendSwatchSize);
+
+        double fixedWidth = LegendPadding * 2 + LegendSwatchSize + LegendColumnSpacing + LegendColumnSpacing + valueColumnWidth;
+        double maxLabelColumnWidth = Math.Max(40, bounds.Width - LegendInset * 2 - fixedWidth);
+
+        double labelColumnWidth = 0;
+        for (int i = 0; i < shown.Length; i++)
+            labelColumnWidth = Math.Max(labelColumnWidth, Math.Min(labelDesiredWidths[i], maxLabelColumnWidth));
+
+        bool clamped = false;
+        for (int i = 0; i < shown.Length; i++)
+        {
+            if (labelDesiredWidths[i] > labelColumnWidth + 0.5)
+            {
+                clamped = true;
+                break;
+            }
+        }
+        if (clamped)
+        {
+            foreach (TextBlock label in labelBlocks)
+                label.TextTrimming = TextTrimming.CharacterEllipsis;
+        }
+
+        int totalRows = shown.Length + (overflowBlock != null ? 1 : 0);
+        double panelWidth = fixedWidth + labelColumnWidth;
+        double panelHeight = LegendPadding * 2 + totalRows * rowHeight + Math.Max(0, totalRows - 1) * LegendRowSpacing;
+
+        if (panelHeight > bounds.Height - LegendInset * 2)
+            return;
+
+        double panelLeft = bounds.Right - panelWidth - LegendInset;
+        double panelTop = bounds.Top + LegendInset;
+
+        Rectangle background = new()
+        {
+            Width = panelWidth,
+            Height = panelHeight,
+            RadiusX = 4,
+            RadiusY = 4,
+            Fill = new SolidColorBrush(GetLegendBackgroundColor()),
+            Stroke = new SolidColorBrush(GetPlotBorderColor()),
+            StrokeThickness = 1
+        };
+        Canvas.SetLeft(background, panelLeft);
+        Canvas.SetTop(background, panelTop);
+        canvas.Children.Add(background);
+
+        double rowTop = panelTop + LegendPadding;
+        double swatchLeft = panelLeft + LegendPadding;
+        double labelLeft = swatchLeft + LegendSwatchSize + LegendColumnSpacing;
+        double valueRight = panelLeft + panelWidth - LegendPadding;
+
+        for (int i = 0; i < shown.Length; i++)
+        {
+            PlotSeriesSample sample = shown[i];
+            global::Windows.UI.Color seriesColor = GetVisiblePlotColor(sample.Series.Color);
+            Rectangle swatch = new()
+            {
+                Width = LegendSwatchSize,
+                Height = LegendSwatchSize,
+                RadiusX = 2,
+                RadiusY = 2,
+                Fill = new SolidColorBrush(seriesColor)
+            };
+            Canvas.SetLeft(swatch, swatchLeft);
+            Canvas.SetTop(swatch, rowTop + Math.Max(0, (rowHeight - LegendSwatchSize) / 2));
+            canvas.Children.Add(swatch);
+
+            TextBlock label = labelBlocks[i];
+            label.MaxWidth = labelColumnWidth;
+            Canvas.SetLeft(label, labelLeft);
+            Canvas.SetTop(label, rowTop + Math.Max(0, (rowHeight - label.DesiredSize.Height) / 2));
+            canvas.Children.Add(label);
+
+            TextBlock value = valueBlocks[i];
+            Canvas.SetLeft(value, valueRight - value.DesiredSize.Width);
+            Canvas.SetTop(value, rowTop + Math.Max(0, (rowHeight - value.DesiredSize.Height) / 2));
+            canvas.Children.Add(value);
+
+            rowTop += rowHeight + LegendRowSpacing;
+        }
+
+        if (overflowBlock != null)
+        {
+            Canvas.SetLeft(overflowBlock, labelLeft);
+            Canvas.SetTop(overflowBlock, rowTop + Math.Max(0, (rowHeight - overflowBlock.DesiredSize.Height) / 2));
+            canvas.Children.Add(overflowBlock);
+        }
+    }
+
+    private global::Windows.UI.Color GetLegendBackgroundColor()
+    {
+        global::Windows.UI.Color background = GetPlotBackgroundColor();
+        return global::Windows.UI.Color.FromArgb(220, background.R, background.G, background.B);
+    }
+
+    private static string FormatLegendValue(double value, string unit)
+    {
+        string formatted = FormatPlotAxisValue(value);
+        return string.IsNullOrEmpty(unit) ? formatted : $"{formatted} {unit}";
     }
 
     private static void GetValueRange(IReadOnlyList<PlotSeriesSample> samples, out double minValue, out double maxValue)

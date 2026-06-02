@@ -43,6 +43,9 @@
                 <MenuFlyoutSeparator />
                 <ToggleMenuFlyoutItem Text="Show Hidden Sensors" IsChecked="{x:Bind ViewModel.ShowHiddenSensors, Mode=TwoWay}" />
                 <ToggleMenuFlyoutItem Text="Show Plot" IsChecked="{x:Bind ViewModel.ShowPlot, Mode=TwoWay}" />
+                <ToggleMenuFlyoutItem Text="Show Plot Legend"
+                                      IsChecked="{x:Bind ViewModel.ShowPlotLegend, Mode=TwoWay}"
+                                      Visibility="{x:Bind ViewModel.ShowPlotLegendMenuVisibility, Mode=OneWay}" />
                 <ToggleMenuFlyoutItem Text="Gadget" IsChecked="{x:Bind ViewModel.ShowGadget, Mode=TwoWay}" />
                 <MenuFlyoutSubItem Text="Columns">
                     <ToggleMenuFlyoutItem Text="Value" IsChecked="{x:Bind ViewModel.ShowValueColumn, Mode=TwoWay}" />
