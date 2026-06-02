@@ -36,8 +36,6 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherQueueTimer _timer;
     private readonly PlotView _plotView;
     private readonly Grid _plotPane;
-    private readonly TreeView _sensorTree;
-    private readonly Grid _sensorPane;
     private readonly WinUiStartupTrace? _startupTrace;
     private readonly TrayIconService _trayIconService;
     private readonly DialogService _dialogService;
@@ -96,17 +94,7 @@ public sealed partial class MainWindow : Window
         Bind(ContentGrid, UIElement.IsHitTestVisibleProperty, ViewModel, nameof(ViewModel.IsHardwareInteractionEnabled));
 
         MeasureStartup("MainWindow.PopulateMenuSubmenus", PopulateMenuSubmenus);
-
-        TreeView? builtTree = null;
-        Grid sensorPane = MeasureStartup("MainWindow.BuildSensorPane", () =>
-        {
-            Grid pane = BuildSensorPane(out TreeView tree);
-            builtTree = tree;
-            return pane;
-        });
-        _sensorPane = sensorPane;
-        _sensorTree = builtTree!;
-        ContentGrid.Children.Add(sensorPane);
+        MeasureStartup("MainWindow.PopulateSensorHeader", PopulateSensorHeader);
 
         PlotView? builtPlot = null;
         Grid plotPane = MeasureStartup("MainWindow.BuildPlotPane", () =>
@@ -226,7 +214,7 @@ public sealed partial class MainWindow : Window
 
     private string GetRootSizeDetail()
     {
-        return FormattableString.Invariant($"root={RootGrid.ActualWidth:F0}x{RootGrid.ActualHeight:F0}, rows={_columnMeasurer.RowCount}, rootNodes={_sensorTree.RootNodes.Count}");
+        return FormattableString.Invariant($"root={RootGrid.ActualWidth:F0}x{RootGrid.ActualHeight:F0}, rows={_columnMeasurer.RowCount}, rootNodes={SensorTree.RootNodes.Count}");
     }
 
     private void RootGrid_Loaded(object sender, RoutedEventArgs e)
@@ -371,17 +359,8 @@ public sealed partial class MainWindow : Window
     private async void OnWebServerAuthentication(object sender, RoutedEventArgs e) => await _dialogService.ShowWebServerAuthenticationAsync();
     private async void OnAbout(object sender, RoutedEventArgs e) => await _dialogService.ShowAboutAsync();
 
-    private Grid BuildSensorPane(out TreeView tree)
+    private void PopulateSensorHeader()
     {
-        Grid pane = new()
-        {
-            RowDefinitions =
-            {
-                new RowDefinition { Height = GridLength.Auto },
-                new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }
-            }
-        };
-
         Grid header = _columnMeasurer.CreateHeaderGrid();
         header.Padding = new Thickness(8, 5, 8, 5);
         header.Background = (Brush)Application.Current.Resources["SystemControlBackgroundChromeMediumLowBrush"];
@@ -389,20 +368,7 @@ public sealed partial class MainWindow : Window
         header.Children.Add(CreateHeaderText("Value", 1, ViewModel.ValueColumnVisibility, nameof(ViewModel.ValueColumnVisibility)));
         header.Children.Add(CreateHeaderText("Min", 2, ViewModel.MinColumnVisibility, nameof(ViewModel.MinColumnVisibility)));
         header.Children.Add(CreateHeaderText("Max", 3, ViewModel.MaxColumnVisibility, nameof(ViewModel.MaxColumnVisibility)));
-        pane.Children.Add(header);
-
-        Grid treeHost = new();
-        Grid.SetRow(treeHost, 1);
-        tree = new()
-        {
-            ItemTemplate = CreateTreeViewNodeContentTemplate(),
-            SelectionMode = TreeViewSelectionMode.Single
-        };
-        tree.SelectionChanged += SensorTree_SelectionChanged;
-        treeHost.Children.Add(tree);
-        pane.Children.Add(treeHost);
-
-        return pane;
+        SensorHeaderHost.Children.Add(header);
     }
 
     private Grid BuildPlotPane(out PlotView plotView)
@@ -636,16 +602,13 @@ public sealed partial class MainWindow : Window
 
     private void RebuildSensorTreeCore()
     {
-        if (_sensorTree == null)
-            return;
-
         _columnMeasurer.ResetRows();
-        _sensorTree.RootNodes.Clear();
+        SensorTree.RootNodes.Clear();
         foreach (SensorTreeItemViewModel item in ViewModel.RootItems)
         {
             TreeViewNode? node = CreateTreeNode(item);
             if (node != null)
-                _sensorTree.RootNodes.Add(node);
+                SensorTree.RootNodes.Add(node);
         }
 
         UpdateSensorColumnWidths();
@@ -665,17 +628,6 @@ public sealed partial class MainWindow : Window
         _startupCompletionRequested = true;
         if (!DispatcherQueue.TryEnqueue(CompleteStartupTraceIfReady))
             CompleteStartupTraceIfReady();
-    }
-
-    private static DataTemplate CreateTreeViewNodeContentTemplate()
-    {
-        const string xaml = """
-            <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
-                <ContentPresenter Content="{Binding Content}" />
-            </DataTemplate>
-            """;
-
-        return (DataTemplate)XamlReader.Load(xaml);
     }
 
     private TreeViewNode? CreateTreeNode(SensorTreeItemViewModel item)
@@ -881,8 +833,8 @@ public sealed partial class MainWindow : Window
         Grid.SetColumn(_plotPane, ViewModel.PlotGridColumn);
         Grid.SetRowSpan(_plotPane, ViewModel.PlotGridRowSpan);
         Grid.SetColumnSpan(_plotPane, ViewModel.PlotGridColumnSpan);
-        Grid.SetRowSpan(_sensorPane, ViewModel.SensorGridRowSpan);
-        Grid.SetColumnSpan(_sensorPane, ViewModel.SensorGridColumnSpan);
+        Grid.SetRowSpan(SensorPane, ViewModel.SensorGridRowSpan);
+        Grid.SetColumnSpan(SensorPane, ViewModel.SensorGridColumnSpan);
         UpdatePlotWindowVisibility();
         DrawPlot();
     }

@@ -87,6 +87,24 @@
                 <RowDefinition Height="*" />
                 <RowDefinition Height="220" />
             </Grid.RowDefinitions>
+            <Grid x:Name="SensorPane" Grid.Column="0" Grid.Row="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <Grid x:Name="SensorHeaderHost" Grid.Row="0" />
+                <Grid Grid.Row="1">
+                    <TreeView x:Name="SensorTree"
+                              SelectionMode="Single"
+                              SelectionChanged="SensorTree_SelectionChanged">
+                        <TreeView.ItemTemplate>
+                            <DataTemplate>
+                                <ContentPresenter Content="{Binding Content}" />
+                            </DataTemplate>
+                        </TreeView.ItemTemplate>
+                    </TreeView>
+                </Grid>
+            </Grid>
         </Grid>
         <TextBlock x:Name="StatusText"
                    Grid.Row="2"
