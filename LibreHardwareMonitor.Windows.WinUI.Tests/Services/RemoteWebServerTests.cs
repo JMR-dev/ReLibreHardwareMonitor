@@ -256,6 +256,18 @@ public class RemoteWebServerTests
         Assert.Equal("", RemoteWebServer.GeneratePrometheusResponse(null, LastValueSettings));
     }
 
+    [Fact]
+    public void GeneratePrometheusResponse_EscapesLabelValues()
+    {
+        ISensor sensor = WithValues(CreateSensor("Core \"0\"", SensorType.Temperature, new Identifier("cpu", "0", "temperature", "0"), 50f), new SensorValue(50f, DateTime.UtcNow));
+        SensorTreeItemViewModel root = BuildRoot("HOST", CreateHardware("CPU", HardwareType.Cpu, new Identifier("cpu", "0"), sensor));
+
+        string output = RemoteWebServer.GeneratePrometheusResponse(root, LastValueSettings);
+
+        // The double quote in the sensor name must be backslash-escaped so it can't break or inject labels.
+        Assert.Contains("Core \\\"0\\\"", output);
+    }
+
     // ---- ComputeSHA256 (legacy hashing; Phase 2 must keep verifying these) ----
 
     [Fact]
@@ -290,6 +302,30 @@ public class RemoteWebServerTests
     {
         using RemoteWebServer server = CreateServer(authEnabled: true, "admin", "secret");
         Assert.False(server.VerifyCredentials(userName, password));
+    }
+
+    [Fact]
+    public void SetPassword_ProducesPbkdf2HashThatVerifies()
+    {
+        using RemoteWebServer server = CreateServer(authEnabled: true, "admin", "secret");
+        server.SetPassword("newpass");
+
+        Assert.StartsWith("pbkdf2$", server.PasswordHash);
+        Assert.True(server.VerifyCredentials("admin", "newpass"));
+        Assert.False(server.VerifyCredentials("admin", "secret"));
+    }
+
+    [Fact]
+    public void VerifyCredentials_LegacyHash_UpgradesToPbkdf2OnSuccess()
+    {
+        // CreateServer seeds the stored hash with the legacy unsalted SHA-256 of the password.
+        using RemoteWebServer server = CreateServer(authEnabled: true, "admin", "secret");
+        Assert.False(server.PasswordHash.StartsWith("pbkdf2$"));
+
+        Assert.True(server.VerifyCredentials("admin", "secret")); // verified via the legacy path...
+        Assert.StartsWith("pbkdf2$", server.PasswordHash);        // ...and transparently upgraded
+
+        Assert.True(server.VerifyCredentials("admin", "secret")); // still verifies via the upgraded hash
     }
 
     // ---- helpers ------------------------------------------------------------

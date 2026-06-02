@@ -4,13 +4,13 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Reflection;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -40,7 +40,7 @@ public sealed class RemoteWebServer : IDisposable
         int listenerPort,
         bool authEnabled,
         string userName,
-        string passwordSha256)
+        string passwordHash)
     {
         _rootProvider = rootProvider;
         _computer = computer;
@@ -49,7 +49,7 @@ public sealed class RemoteWebServer : IDisposable
         ListenerPort = listenerPort;
         AuthEnabled = authEnabled;
         UserName = userName;
-        PasswordSHA256 = passwordSha256;
+        PasswordHash = passwordHash;
 
         try
         {
@@ -69,7 +69,7 @@ public sealed class RemoteWebServer : IDisposable
 
     public int ListenerPort { get; set; }
 
-    public string PasswordSHA256 { get; private set; }
+    public string PasswordHash { get; private set; }
 
     public bool PlatformNotSupported => _listener == null;
 
@@ -82,7 +82,7 @@ public sealed class RemoteWebServer : IDisposable
 
     public void SetPassword(string plainPassword)
     {
-        PasswordSHA256 = ComputeSHA256(plainPassword);
+        PasswordHash = PasswordHasher.Hash(plainPassword);
     }
 
     public bool Start()
@@ -307,7 +307,19 @@ public sealed class RemoteWebServer : IDisposable
         if (userName == null || password == null)
             return false;
 
-        return userName == UserName && ComputeSHA256(password) == PasswordSHA256;
+        // Compare the user name and the password hash in constant time, and evaluate both fully (no && short-circuit)
+        // so neither a wrong user name nor a wrong password can be distinguished from response timing.
+        bool userMatch = CredentialComparer.FixedTimeEquals(userName, UserName);
+        bool passwordMatch = PasswordHasher.Verify(password, PasswordHash, out bool isLegacy);
+        if (!(userMatch & passwordMatch))
+            return false;
+
+        // Transparently upgrade a legacy unsalted-SHA-256 credential to PBKDF2 on first successful authentication. The
+        // upgraded hash is persisted by the view model when settings are next saved (e.g. on shutdown).
+        if (isLegacy)
+            PasswordHash = PasswordHasher.Hash(password);
+
+        return true;
     }
 
     private async Task HandlePostRequestAsync(HttpListenerResponse response, HttpListenerRequest request)
@@ -322,8 +334,10 @@ public sealed class RemoteWebServer : IDisposable
         }
         catch (Exception ex)
         {
+            // Return a generic message; the exception detail (which can reveal internal state) stays server-side.
             result["result"] = "fail";
-            result["message"] = ex.ToString();
+            result["message"] = "Bad request";
+            Debug.WriteLine($"Remote web server POST request failed: {ex}");
         }
 
         await SendJsonSensorAsync(response, result);
@@ -410,8 +424,7 @@ public sealed class RemoteWebServer : IDisposable
         byte[] buffer = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(json, options));
         bool acceptGzip = request.Headers["Accept-Encoding"]?.IndexOf("gzip", StringComparison.OrdinalIgnoreCase) >= 0;
 
-        response.AddHeader("Cache-Control", "no-cache");
-        response.AddHeader("Access-Control-Allow-Origin", "*");
+        WriteCommonHeaders(response);
         response.ContentType = "application/json";
 
         if (acceptGzip)
@@ -475,8 +488,7 @@ public sealed class RemoteWebServer : IDisposable
         lock (_sensorReadLock)
             content = GeneratePrometheusResponse(_rootProvider(), settings);
 
-        response.AddHeader("Cache-Control", "no-cache");
-        response.AddHeader("Access-Control-Allow-Origin", "*");
+        WriteCommonHeaders(response);
         response.AddHeader("X-archivelength", settings["archivelength"].ToString(CultureInfo.InvariantCulture));
         response.AddHeader("X-timestamps", settings["timestamps"].ToString(CultureInfo.InvariantCulture));
         response.AddHeader("X-lastvalue", settings["lastvalue"].ToString(CultureInfo.InvariantCulture));
@@ -540,7 +552,7 @@ public sealed class RemoteWebServer : IDisposable
                     ? sensor.Identifier.ToString()[hardwareId.Length..]
                     : sensor.Identifier.ToString();
                 string sensorAlias = $"{sensorName} ({sensorId})";
-                string tagLine = $$"""{{tagName}} {"sensorName"="{{sensorName}}", "sensorAlias"="{{sensorAlias}}", "hardwareName"="{{hardwareName}}", "hardwareAlias"="{{hardwareAlias}}", "sensorId"="{{sensorId}}", "hardwareId"="{{hardwareId}}", "host"="{{host}}"}""";
+                string tagLine = $$"""{{tagName}} {"sensorName"="{{EscapePrometheusLabel(sensorName)}}", "sensorAlias"="{{EscapePrometheusLabel(sensorAlias)}}", "hardwareName"="{{EscapePrometheusLabel(hardwareName)}}", "hardwareAlias"="{{EscapePrometheusLabel(hardwareAlias)}}", "sensorId"="{{EscapePrometheusLabel(sensorId)}}", "hardwareId"="{{EscapePrometheusLabel(hardwareId)}}", "host"="{{EscapePrometheusLabel(host)}}"}""";
 
                 if (lastTagName != tagName)
                 {
@@ -602,8 +614,7 @@ public sealed class RemoteWebServer : IDisposable
 
     private async Task SendJsonSensorAsync(HttpListenerResponse response, Dictionary<string, object?> sensorData)
     {
-        response.AddHeader("Cache-Control", "no-cache");
-        response.AddHeader("Access-Control-Allow-Origin", "*");
+        WriteCommonHeaders(response);
         await SendResponseAsync(response, JsonSerializer.Serialize(sensorData), "application/json");
     }
 
@@ -647,20 +658,18 @@ public sealed class RemoteWebServer : IDisposable
 
     private string ResolveListenerIp()
     {
+        // Explicit wildcards bind every interface; pass them through with their exact prefixes.
         if (ListenerIp is "+" or "*" or "0.0.0.0")
             return ListenerIp;
 
-        try
-        {
-            IPHostEntry host = Dns.GetHostEntry(Dns.GetHostName());
-            if (host.AddressList.Any(ip => ip.ToString() == ListenerIp))
-                return ListenerIp;
-        }
-        catch
-        {
-        }
+        // "?" (and a blank value) is the unconfigured "auto" default, which historically bound all interfaces.
+        if (string.IsNullOrWhiteSpace(ListenerIp) || ListenerIp == "?")
+            return "+";
 
-        ListenerIp = "+";
+        // A specific address: bind exactly what the user configured. Unlike before, we no longer silently fall back to
+        // "+" (every interface) when the address is not one of this host's enumerated addresses — that widened the
+        // user's chosen scope and was even persisted back to settings. If the address cannot be bound, Start() fails and
+        // the caller surfaces the error, so the user's binding intent is respected.
         return ListenerIp;
     }
 
@@ -756,9 +765,26 @@ public sealed class RemoteWebServer : IDisposable
         return result;
     }
 
+    private static void WriteCommonHeaders(HttpListenerResponse response)
+    {
+        response.AddHeader("Cache-Control", "no-cache");
+
+        // No "Access-Control-Allow-Origin: *": the bundled web UI is served from this same origin (so it needs no CORS
+        // grant), and omitting the header lets the browser's same-origin policy keep arbitrary third-party sites from
+        // reading sensor data. Server-to-server scrapers such as Prometheus are unaffected.
+    }
+
+    // Escapes a Prometheus exposition-format label value. Hardware/sensor names can contain characters that would
+    // otherwise break the line or inject extra labels, so backslash, double-quote and newline must be escaped.
+    private static string EscapePrometheusLabel(string value)
+    {
+        return value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n");
+    }
+
+    // Retained for backward compatibility (and tests). The legacy unsalted SHA-256 scheme is now used only to verify and
+    // upgrade pre-existing credentials; new passwords are hashed by PasswordHasher (PBKDF2).
     public static string ComputeSHA256(string text)
     {
-        using SHA256 hash = SHA256.Create();
-        return string.Concat(hash.ComputeHash(Encoding.UTF8.GetBytes(text)).Select(item => item.ToString("x2", CultureInfo.InvariantCulture)));
+        return PasswordHasher.ComputeLegacySha256(text);
     }
 }

@@ -740,7 +740,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         Settings.SetValue("listenerPort", ListenerPort);
         Settings.SetValue("authenticationEnabled", AuthWebServer);
         Settings.SetValue("authenticationUserName", AuthWebServerUserName);
-        Settings.SetValue("authenticationPassword", _remoteWebServer.PasswordSHA256);
+        Settings.SetValue("authenticationPassword", _remoteWebServer.PasswordHash);
         _remoteWebServer.Quit();
         _hardwareMonitor.Dispose();
         Save();
@@ -798,7 +798,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
             return;
 
         _remoteWebServer.SetPassword(plainPassword);
-        Settings.SetValue("authenticationPassword", _remoteWebServer.PasswordSHA256);
+        Settings.SetValue("authenticationPassword", _remoteWebServer.PasswordHash);
         RestartWebServerIfRunning();
     }
 
