@@ -23,7 +23,24 @@
                 <RowDefinition Height="220" />
             </Grid.RowDefinitions>
         </Grid>
-        <Grid x:Name="StatusHost" Grid.Row="2" />
-        <Grid x:Name="OverlayHost" Grid.RowSpan="3" />
+        <TextBlock x:Name="StatusText"
+                   Grid.Row="2"
+                   Padding="8,4,8,4"
+                   TextTrimming="CharacterEllipsis"
+                   Text="{x:Bind ViewModel.StatusText, Mode=OneWay}" />
+        <Grid x:Name="OverlayHost"
+              Grid.RowSpan="3"
+              IsHitTestVisible="True"
+              Visibility="{x:Bind ViewModel.HardwareLoadingVisibility, Mode=OneWay}">
+            <Grid.Background>
+                <SolidColorBrush Color="#80808080" />
+            </Grid.Background>
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="12">
+                <ProgressRing Width="64" Height="64" IsIndeterminate="True" />
+                <TextBlock Text="Loading hardware devices..."
+                           FontWeight="SemiBold"
+                           HorizontalAlignment="Center" />
+            </StackPanel>
+        </Grid>
     </Grid>
 </Window>

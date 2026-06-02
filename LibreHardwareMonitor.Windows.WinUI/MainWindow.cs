@@ -94,7 +94,6 @@ public sealed partial class MainWindow : Window
         RootGrid.Loaded += RootGrid_Loaded;
         RootGrid.LayoutUpdated += RootGrid_LayoutUpdated;
         Bind(ContentGrid, UIElement.IsHitTestVisibleProperty, ViewModel, nameof(ViewModel.IsHardwareInteractionEnabled));
-        Bind(OverlayHost, UIElement.VisibilityProperty, ViewModel, nameof(ViewModel.HardwareLoadingVisibility));
 
         MeasureStartup("MainWindow.BuildMenuBar", () => MenuHost.Children.Add(BuildMenuBar()));
 
@@ -119,16 +118,6 @@ public sealed partial class MainWindow : Window
         _plotPane = plotPane;
         _plotView = builtPlot!;
         ContentGrid.Children.Add(plotPane);
-
-        TextBlock statusText = new()
-        {
-            Padding = new Thickness(8, 4, 8, 4),
-            TextTrimming = TextTrimming.CharacterEllipsis
-        };
-        Bind(statusText, TextBlock.TextProperty, ViewModel, nameof(ViewModel.StatusText));
-        StatusHost.Children.Add(statusText);
-
-        MeasureStartup("MainWindow.BuildLoadingOverlay", () => OverlayHost.Children.Add(BuildLoadingOverlay()));
 
         MeasureStartup("MainWindow.RestoreWindowBounds", _placementService.Restore);
         MeasureStartup("MainWindow.MaximizeWindow", _placementService.Maximize);
@@ -438,41 +427,6 @@ public sealed partial class MainWindow : Window
         menuBar.Items.Add(help);
 
         return menuBar;
-    }
-
-    private Grid BuildLoadingOverlay()
-    {
-        Grid overlay = new()
-        {
-            Background = new SolidColorBrush(global::Windows.UI.Color.FromArgb(150, 128, 128, 128)),
-            Visibility = ViewModel.HardwareLoadingVisibility,
-            IsHitTestVisible = true
-        };
-        Bind(overlay, UIElement.VisibilityProperty, ViewModel, nameof(ViewModel.HardwareLoadingVisibility));
-
-        StackPanel content = new()
-        {
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            Spacing = 12
-        };
-        ProgressRing progressRing = new()
-        {
-            Width = 64,
-            Height = 64,
-            IsIndeterminate = true
-        };
-        TextBlock text = new()
-        {
-            Text = "Loading hardware devices...",
-            FontWeight = new global::Windows.UI.Text.FontWeight { Weight = 600 },
-            HorizontalAlignment = HorizontalAlignment.Center
-        };
-        content.Children.Add(progressRing);
-        content.Children.Add(text);
-        overlay.Children.Add(content);
-
-        return overlay;
     }
 
     private Grid BuildSensorPane(out TreeView tree)
