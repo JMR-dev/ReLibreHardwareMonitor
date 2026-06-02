@@ -4,17 +4,19 @@
 
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using LibreHardwareMonitor.Hardware;
 using LibreHardwareMonitor.Windows.WinUI.Utilities;
 using LibreHardwareMonitor.Windows.WinUI.ViewModels;
-using WinUIColor = Windows.UI.Color;
+using static LibreHardwareMonitor.Windows.WinUI.Services.TrayIconInterop;
 
 namespace LibreHardwareMonitor.Windows.WinUI.Services;
 
+// Orchestrates the system-tray icons: a main app icon (shown only when no per-sensor icons are present) plus one icon
+// per user-selected sensor, their context menus, and routing of the shell callback messages. Win32 interop lives in
+// TrayIconInterop; the per-sensor icon bitmaps are drawn by SensorIconRenderer.
 public sealed class TrayIconService : IDisposable
 {
     private const uint CallbackMessage = 0x8000 + 0x42;
@@ -34,11 +36,11 @@ public sealed class TrayIconService : IDisposable
     private const uint MfString = 0x00000000;
     private const uint TpmReturNcmd = 0x0100;
     private const uint TpmRightButton = 0x0002;
-    private const int IconSize = 16;
 
     private readonly Dictionary<string, SensorTrayIcon> _sensorIconsByIdentifier = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, SensorTrayIcon> _sensorIconsById = new();
     private readonly Func<TemperatureUnit> _temperatureUnitProvider;
+    private readonly SensorIconRenderer _iconRenderer;
     private readonly IntPtr _windowHandle;
     private readonly SubclassProc _subclassProc;
     private readonly AppSettings _settings;
@@ -54,6 +56,7 @@ public sealed class TrayIconService : IDisposable
         _windowHandle = windowHandle;
         _settings = settings;
         _temperatureUnitProvider = temperatureUnitProvider;
+        _iconRenderer = new SensorIconRenderer(settings, temperatureUnitProvider);
         _subclassProc = WindowSubclassProc;
         SetWindowSubclass(_windowHandle, _subclassProc, MainIconId, 0);
         _mainIconHandle = LoadApplicationIcon();
@@ -87,13 +90,13 @@ public sealed class TrayIconService : IDisposable
         }
 
         SensorTrayIcon icon = new(_nextSensorIconId++, sensor);
-        icon.IconHandle = CreateSensorIcon(sensor);
+        icon.IconHandle = _iconRenderer.CreateIcon(sensor);
         _sensorIconsByIdentifier[identifier] = icon;
         _sensorIconsById[icon.Id] = icon;
         AddNotifyIcon(icon.Id, icon.IconHandle, GetSensorToolTip(sensor));
 
         if (persist)
-            _settings.SetValue(GetSensorSettingName(sensor, "tray"), true);
+            _settings.SetValue(SensorSelectionService.GetSensorSettingName(sensor, "tray"), true);
 
         UpdateMainIconVisibility();
     }
@@ -131,7 +134,7 @@ public sealed class TrayIconService : IDisposable
     public void RestoreSelectedSensors(IEnumerable<SensorTreeItemViewModel> sensorItems)
     {
         Dictionary<string, ISensor> selected = sensorItems
-            .Where(item => item.Sensor != null && _settings.GetValue(GetSensorSettingName(item.Sensor, "tray"), false))
+            .Where(item => item.Sensor != null && _settings.GetValue(SensorSelectionService.GetSensorSettingName(item.Sensor, "tray"), false))
             .Select(item => item.Sensor!)
             .ToDictionary(sensor => sensor.Identifier.ToString(), StringComparer.OrdinalIgnoreCase);
 
@@ -156,7 +159,7 @@ public sealed class TrayIconService : IDisposable
     private void Update(SensorTrayIcon icon)
     {
         IntPtr previousIcon = icon.IconHandle;
-        icon.IconHandle = CreateSensorIcon(icon.Sensor);
+        icon.IconHandle = _iconRenderer.CreateIcon(icon.Sensor);
         ModifyNotifyIcon(icon.Id, icon.IconHandle, GetSensorToolTip(icon.Sensor));
         if (previousIcon != IntPtr.Zero)
             DestroyIcon(previousIcon);
@@ -175,8 +178,8 @@ public sealed class TrayIconService : IDisposable
 
         if (deleteSettings)
         {
-            _settings.Remove(GetSensorSettingName(icon.Sensor, "tray"));
-            _settings.Remove(GetSensorSettingName(icon.Sensor, "traycolor"));
+            _settings.Remove(SensorSelectionService.GetSensorSettingName(icon.Sensor, "tray"));
+            _settings.Remove(SensorSelectionService.GetSensorSettingName(icon.Sensor, "traycolor"));
         }
 
         UpdateMainIconVisibility();
@@ -351,98 +354,6 @@ public sealed class TrayIconService : IDisposable
         return LoadIcon(IntPtr.Zero, new IntPtr(32512));
     }
 
-    private IntPtr CreateSensorIcon(ISensor sensor)
-    {
-        IntPtr hdc = GetDC(IntPtr.Zero);
-        IntPtr memoryDc = CreateCompatibleDC(hdc);
-        IntPtr bitmap = IntPtr.Zero;
-        IntPtr mask = IntPtr.Zero;
-        IntPtr oldBitmap = IntPtr.Zero;
-        IntPtr font = IntPtr.Zero;
-        IntPtr oldFont = IntPtr.Zero;
-        IntPtr brush = IntPtr.Zero;
-
-        try
-        {
-            BitmapInfo bitmapInfo = BitmapInfo.Create(IconSize, IconSize);
-            bitmap = CreateDIBSection(hdc, ref bitmapInfo, 0, out _, IntPtr.Zero, 0);
-            if (bitmap == IntPtr.Zero)
-                return IntPtr.Zero; // never return the shared main icon: callers DestroyIcon() the returned handle
-
-            oldBitmap = SelectObject(memoryDc, bitmap);
-            WinUIColor color = GetSensorTrayColor(sensor);
-            brush = CreateSolidBrush(ToColorRef(color));
-            Rect fill = new() { Left = 0, Top = 0, Right = IconSize, Bottom = IconSize };
-            FillRect(memoryDc, ref fill, brush);
-
-            font = CreateFont(-11, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 0, 0, "Segoe UI");
-            oldFont = SelectObject(memoryDc, font);
-            SetBkMode(memoryDc, 1);
-            SetTextColor(memoryDc, ToColorRef(WinUIColor.FromArgb(255, 255, 255, 255)));
-
-            string text = GetSensorIconText(sensor);
-            Rect textRect = new() { Left = 0, Top = 0, Right = IconSize, Bottom = IconSize };
-            DrawText(memoryDc, text, text.Length, ref textRect, 0x00000001 | 0x00000004 | 0x00000020);
-
-            mask = CreateBitmap(IconSize, IconSize, 1, 1, IntPtr.Zero);
-            IconInfo iconInfo = new()
-            {
-                IsIcon = true,
-                ColorBitmap = bitmap,
-                MaskBitmap = mask
-            };
-
-            return CreateIconIndirect(ref iconInfo);
-        }
-        finally
-        {
-            if (oldFont != IntPtr.Zero)
-                SelectObject(memoryDc, oldFont);
-            if (oldBitmap != IntPtr.Zero)
-                SelectObject(memoryDc, oldBitmap);
-            if (font != IntPtr.Zero)
-                DeleteObject(font);
-            if (brush != IntPtr.Zero)
-                DeleteObject(brush);
-            if (bitmap != IntPtr.Zero)
-                DeleteObject(bitmap);
-            if (mask != IntPtr.Zero)
-                DeleteObject(mask);
-            if (memoryDc != IntPtr.Zero)
-                DeleteDC(memoryDc);
-            if (hdc != IntPtr.Zero)
-                ReleaseDC(IntPtr.Zero, hdc);
-        }
-    }
-
-    private WinUIColor GetSensorTrayColor(ISensor sensor)
-    {
-        WinUIColor defaultColor = sensor.SensorType is SensorType.Load or SensorType.Control or SensorType.Level
-            ? WinUIColor.FromArgb(255, 0x70, 0x8c, 0xf1)
-            : WinUIColor.FromArgb(255, 0x00, 0x78, 0xd4);
-
-        return _settings.GetValue(GetSensorSettingName(sensor, "traycolor"), defaultColor);
-    }
-
-    private string GetSensorIconText(ISensor sensor)
-    {
-        if (!sensor.Value.HasValue)
-            return "-";
-
-        float value = sensor.Value.Value;
-        if (sensor.SensorType == SensorType.Temperature && _temperatureUnitProvider() == TemperatureUnit.Fahrenheit)
-            value = value * 1.8f + 32;
-
-        return sensor.SensorType switch
-        {
-            SensorType.TimeSpan => TimeSpan.FromSeconds(value).ToString("g", CultureInfo.CurrentCulture),
-            SensorType.Timing => value.ToString("F1", CultureInfo.CurrentCulture),
-            SensorType.Clock or SensorType.Fan or SensorType.Flow => (value * 1e-3f).ToString("F1", CultureInfo.CurrentCulture),
-            SensorType.Voltage or SensorType.Current or SensorType.SmallData or SensorType.Factor or SensorType.Throughput or SensorType.Conductivity => value.ToString("F1", CultureInfo.CurrentCulture),
-            _ => value.ToString("F0", CultureInfo.CurrentCulture)
-        };
-    }
-
     private string GetSensorToolTip(ISensor sensor)
     {
         string value = SensorFormatter.FormatValue(sensor, sensor.Value, _temperatureUnitProvider());
@@ -450,19 +361,9 @@ public sealed class TrayIconService : IDisposable
         return TrimForNotifyIcon(text, 127);
     }
 
-    private static uint ToColorRef(WinUIColor color)
-    {
-        return (uint)(color.R | (color.G << 8) | (color.B << 16));
-    }
-
     private static string TrimForNotifyIcon(string text, int maximumLength)
     {
         return text.Length <= maximumLength ? text : text[..maximumLength];
-    }
-
-    private static string GetSensorSettingName(ISensor sensor, string suffix)
-    {
-        return new Identifier(sensor.Identifier, suffix).ToString();
     }
 
     private sealed class SensorTrayIcon(uint id, ISensor sensor)
@@ -473,188 +374,4 @@ public sealed class TrayIconService : IDisposable
 
         public ISensor Sensor { get; set; } = sensor;
     }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct NotifyIconData
-    {
-        public int cbSize;
-        public IntPtr hWnd;
-        public uint uID;
-        public uint uFlags;
-        public uint uCallbackMessage;
-        public IntPtr hIcon;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
-        public string szTip;
-        public uint dwState;
-        public uint dwStateMask;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
-        public string szInfo;
-        public uint uTimeoutOrVersion;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
-        public string szInfoTitle;
-        public uint dwInfoFlags;
-        public Guid guidItem;
-        public IntPtr hBalloonIcon;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct Point
-    {
-        public int X;
-        public int Y;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct Rect
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct IconInfo
-    {
-        [MarshalAs(UnmanagedType.Bool)]
-        public bool IsIcon;
-        public int XHotspot;
-        public int YHotspot;
-        public IntPtr MaskBitmap;
-        public IntPtr ColorBitmap;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct BitmapInfoHeader
-    {
-        public uint Size;
-        public int Width;
-        public int Height;
-        public ushort Planes;
-        public ushort BitCount;
-        public uint Compression;
-        public uint SizeImage;
-        public int XPelsPerMeter;
-        public int YPelsPerMeter;
-        public uint ClrUsed;
-        public uint ClrImportant;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct BitmapInfo
-    {
-        public BitmapInfoHeader Header;
-        public uint Colors;
-
-        public static BitmapInfo Create(int width, int height)
-        {
-            return new BitmapInfo
-            {
-                Header = new BitmapInfoHeader
-                {
-                    Size = (uint)Marshal.SizeOf<BitmapInfoHeader>(),
-                    Width = width,
-                    Height = -height,
-                    Planes = 1,
-                    BitCount = 32
-                }
-            };
-        }
-    }
-
-    private delegate IntPtr SubclassProc(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam, nuint subclassId, nuint refData);
-
-    [DllImport("Comctl32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetWindowSubclass(IntPtr hWnd, SubclassProc subclassProc, nuint subclassId, nuint refData);
-
-    [DllImport("Comctl32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool RemoveWindowSubclass(IntPtr hWnd, SubclassProc subclassProc, nuint subclassId);
-
-    [DllImport("Comctl32.dll")]
-    private static extern IntPtr DefSubclassProc(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool Shell_NotifyIcon(uint message, ref NotifyIconData data);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr LoadImage(IntPtr instance, string name, uint type, int desiredWidth, int desiredHeight, uint load);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr LoadIcon(IntPtr instance, IntPtr iconName);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DestroyIcon(IntPtr icon);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr CreatePopupMenu();
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool AppendMenu(IntPtr menu, uint flags, uint newItemId, string? newItem);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DestroyMenu(IntPtr menu);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern int TrackPopupMenuEx(IntPtr menu, uint flags, int x, int y, IntPtr windowHandle, IntPtr parameters);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetCursorPos(out Point point);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetForegroundWindow(IntPtr windowHandle);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetDC(IntPtr windowHandle);
-
-    [DllImport("user32.dll")]
-    private static extern int ReleaseDC(IntPtr windowHandle, IntPtr deviceContext);
-
-    [DllImport("gdi32.dll")]
-    private static extern IntPtr CreateCompatibleDC(IntPtr deviceContext);
-
-    [DllImport("gdi32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DeleteDC(IntPtr deviceContext);
-
-    [DllImport("gdi32.dll")]
-    private static extern IntPtr SelectObject(IntPtr deviceContext, IntPtr gdiObject);
-
-    [DllImport("gdi32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DeleteObject(IntPtr gdiObject);
-
-    [DllImport("gdi32.dll")]
-    private static extern IntPtr CreateDIBSection(IntPtr deviceContext, ref BitmapInfo bitmapInfo, uint usage, out IntPtr bits, IntPtr section, uint offset);
-
-    [DllImport("gdi32.dll")]
-    private static extern IntPtr CreateBitmap(int width, int height, uint planes, uint bitCount, IntPtr bits);
-
-    [DllImport("gdi32.dll")]
-    private static extern IntPtr CreateSolidBrush(uint color);
-
-    [DllImport("user32.dll")]
-    private static extern int FillRect(IntPtr deviceContext, ref Rect rect, IntPtr brush);
-
-    [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr CreateFont(int height, int width, int escapement, int orientation, int weight, uint italic, uint underline, uint strikeOut, uint charSet, uint outputPrecision, uint clipPrecision, uint quality, uint pitchAndFamily, string faceName);
-
-    [DllImport("gdi32.dll")]
-    private static extern int SetBkMode(IntPtr deviceContext, int mode);
-
-    [DllImport("gdi32.dll")]
-    private static extern uint SetTextColor(IntPtr deviceContext, uint color);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern int DrawText(IntPtr deviceContext, string text, int count, ref Rect rect, uint format);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr CreateIconIndirect(ref IconInfo iconInfo);
 }
