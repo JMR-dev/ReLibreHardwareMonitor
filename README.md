@@ -7,7 +7,8 @@ Libre Hardware Monitor is free software that can monitor the temperature sensors
 | Name| .NET | Build Status |
 | --- | --- | --- | 
 | **LibreHardwareMonitor** <br /> Windows Forms based application that presents all data in a graphical interface | .NET Framework 4.7.2 <br/> .NET 10.0 | [![Build status](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/actions/workflows/master.yml/badge.svg)](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/actions) | 
-| **LibreHardwareMonitorLib** <br /> Library that allows you to use all features in your own application | .NET Framework 4.7.2 <br/> .NET Standard 2.0 <br/> .NET 8.0, .NET 9.0, and .NET 10.0 | [![Build status](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/actions/workflows/master.yml/badge.svg)](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/actions) | 
+| **LibreHardwareMonitor.Windows.WinUI** <br /> Modern WinUI 3 based application that presents all data in a fluent graphical interface | .NET 10.0 | [![Build status](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/actions/workflows/master.yml/badge.svg)](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/actions) | 
+| **LibreHardwareMonitorLib** <br /> Library that allows you to use all features in your own application | .NET Framework 4.7.2 <br/> .NET Standard 2.0 <br/> .NET 8.0, .NET 9.0, and .NET 10.0 | [![Build status](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/actions/workflows/master.yml/badge.svg)](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/actions) |
 
 ## What can it do?
 You can read information from devices such as:
@@ -88,6 +89,19 @@ public class UpdateVisitor : IVisitor
 **Administrator rights**
 
 Some sensors require administrator privileges to access the data. Restart your IDE with admin privileges, or add an [app.manifest](https://learn.microsoft.com/en-us/windows/win32/sbscs/application-manifests) file to your project with requestedExecutionLevel on requireAdministrator.
+
+**WinUI 3 Application**
+
+The WinUI 3 application is a modern presentation layer that features:
+- **Modern UI**: Clean Fluent Design with Mica material backdrop, supporting system dark and light modes.
+- **Asynchronous Startup**: Progressively loads and updates discovered hardware groups concurrently to prevent startup hangs.
+- **Advanced Graphing**: Interactive, real-time sensor plot views with a configurable floating plot legend overlay.
+- **Secondary Windows**: Configurable floating sensor desktop gadget and pop-out graphs.
+- **Remote Web Server**: Built-in HTTP server to monitor hardware remotely with password-based authentication.
+- **System Tray Integration**: Native tray icon support, taskbar notification bubbles, minimize on close, and start minimized options.
+- **Clean Architecture**: Designed using the MVVM pattern with `Microsoft.Extensions.DependencyInjection` as the composition root.
+
+To run or develop the WinUI 3 application, open `LibreHardwareMonitor.sln` in Visual Studio 2022 and run the `LibreHardwareMonitor.Windows.WinUI` project.
 
 ## Warning
 
