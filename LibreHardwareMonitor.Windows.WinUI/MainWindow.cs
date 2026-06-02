@@ -30,22 +30,10 @@ namespace LibreHardwareMonitor.Windows.WinUI;
 
 public sealed class MainWindow : Window
 {
-    private static readonly TimeSpan DeviceColumnWidthSettleDelay = TimeSpan.FromSeconds(5);
-
-    private const double DefaultSensorColumnWidth = 320;
-    private const double MaximumSensorColumnWidth = 4096;
-    private const double MinimumSensorColumnWidth = 120;
-    private const double SensorColumnPadding = 72;
-    private const double SensorTreeIndentWidth = 20;
-    private const string DeviceColumnWidthSetting = "winui.deviceColumnWidth";
-    private const double ValueColumnPadding = 18;
-    private const int MaxTextMeasurementCacheEntries = 4096;
-
     private readonly AppWindow _appWindow;
     private readonly WindowChromeManager _chromeManager;
     private readonly WindowPlacementService _placementService;
     private readonly Grid _contentGrid;
-    private readonly DispatcherQueueTimer _deviceColumnWidthSettleTimer;
     private readonly DispatcherQueueTimer _timer;
     private readonly PlotView _plotView;
     private readonly Grid _plotPane;
@@ -55,14 +43,8 @@ public sealed class MainWindow : Window
     private readonly WinUiStartupTrace? _startupTrace;
     private readonly TrayIconService _trayIconService;
     private readonly DialogService _dialogService;
-    private readonly Dictionary<(string Text, bool Bold), double> _textMeasurementCache = new();
-    private TextBlock? _measurementTextBlock;
-    private readonly List<Grid> _sensorRowGrids = [];
-    private readonly double[] _sensorColumnWidths = [DefaultSensorColumnWidth, 120, 120, 120];
+    private readonly SensorColumnMeasurer _columnMeasurer;
     private readonly SecondaryWindowCoordinator _secondaryWindows;
-    private Grid? _sensorHeader;
-    private double _stableDeviceColumnWidth = DefaultSensorColumnWidth;
-    private bool _deviceColumnWidthSettled;
     private bool _firstLayoutRecorded;
     private bool _isUpdating;
     private bool _initialWindowStateApplied;
@@ -85,7 +67,6 @@ public sealed class MainWindow : Window
         _startupTrace?.Mark("MainWindow.Constructor.Begin");
         AppSettings settings = MeasureStartup("MainWindow.LoadSettings", AppSettings.LoadDefault);
         ViewModel = MeasureStartup("MainWindow.CreateViewModel", () => new MainWindowViewModel(settings, _startupTrace));
-        MeasureStartup("MainWindow.ApplySavedDeviceColumnWidth", () => ApplySavedDeviceColumnWidth(settings), () => FormattableString.Invariant($"width={_sensorColumnWidths[0]:F0}"));
 
         _appWindow = MeasureStartup("MainWindow.GetAppWindow", () =>
         {
@@ -106,6 +87,9 @@ public sealed class MainWindow : Window
         _trayIconService.IsMainIconEnabled = ViewModel.MinimizeToTray;
         _dialogService = new DialogService(() => Content.XamlRoot, ViewModel, WindowNative.GetWindowHandle(this));
         _secondaryWindows = new SecondaryWindowCoordinator(ViewModel, HideShowMainWindow);
+        _columnMeasurer = new SensorColumnMeasurer(DispatcherQueue, ViewModel, _startupTrace);
+        MeasureStartup("MainWindow.ApplySavedDeviceColumnWidth", _columnMeasurer.ApplySavedWidth, () => FormattableString.Invariant($"width={_columnMeasurer.DeviceColumnWidth:F0}"));
+        _columnMeasurer.SettleTriggered += (_, _) => UpdateSensorColumnWidths();
 
         Grid root = MeasureStartup("MainWindow.BuildRoot", BuildRoot);
         MeasureStartup("MainWindow.AssignContent", () => Content = root);
@@ -133,17 +117,12 @@ public sealed class MainWindow : Window
         MeasureStartup("MainWindow.ApplyTheme", ApplyTheme);
         MeasureStartup("MainWindow.UpdatePlotLayout", UpdatePlotLayout);
 
-        (_timer, _deviceColumnWidthSettleTimer) = MeasureStartup("MainWindow.CreateTimers", () =>
+        _timer = MeasureStartup("MainWindow.CreateTimer", () =>
         {
             DispatcherQueueTimer timer = DispatcherQueue.CreateTimer();
             timer.Interval = ViewModel.UpdateInterval;
             timer.Tick += UpdateTimer_Tick;
-
-            DispatcherQueueTimer settleTimer = DispatcherQueue.CreateTimer();
-            settleTimer.Interval = DeviceColumnWidthSettleDelay;
-            settleTimer.Tick += DeviceColumnWidthSettleTimer_Tick;
-
-            return (timer, settleTimer);
+            return timer;
         });
 
         MeasureStartup("MainWindow.WireEvents", () =>
@@ -240,7 +219,7 @@ public sealed class MainWindow : Window
 
     private string GetRootSizeDetail()
     {
-        return FormattableString.Invariant($"root={_rootGrid.ActualWidth:F0}x{_rootGrid.ActualHeight:F0}, rows={_sensorRowGrids.Count}, rootNodes={_sensorTree.RootNodes.Count}");
+        return FormattableString.Invariant($"root={_rootGrid.ActualWidth:F0}x{_rootGrid.ActualHeight:F0}, rows={_columnMeasurer.RowCount}, rootNodes={_sensorTree.RootNodes.Count}");
     }
 
     private void RootGrid_Loaded(object sender, RoutedEventArgs e)
@@ -540,8 +519,7 @@ public sealed class MainWindow : Window
             }
         };
 
-        Grid header = CreateSensorRowGrid();
-        _sensorHeader = header;
+        Grid header = _columnMeasurer.CreateHeaderGrid();
         header.Padding = new Thickness(8, 5, 8, 5);
         header.Background = (Brush)Application.Current.Resources["SystemControlBackgroundChromeMediumLowBrush"];
         header.Children.Add(CreateHeaderText("Sensor", 0, Visibility.Visible));
@@ -692,12 +670,6 @@ public sealed class MainWindow : Window
         ViewModel.SetStatusText($"{message}. See {IOPath.GetFileName(logPath)}.");
     }
 
-    private void ApplySavedDeviceColumnWidth(AppSettings settings)
-    {
-        _stableDeviceColumnWidth = NormalizeDeviceColumnWidth(settings.GetValue(DeviceColumnWidthSetting, DefaultSensorColumnWidth));
-        _sensorColumnWidths[0] = _stableDeviceColumnWidth;
-    }
-
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {
         if (!_isClosingForExit && ViewModel.MinimizeOnClose)
@@ -709,7 +681,7 @@ public sealed class MainWindow : Window
 
         _isShuttingDown = true;
         _timer.Stop();
-        _deviceColumnWidthSettleTimer.Stop();
+        _columnMeasurer.StopSettleTimer();
         _trayIconService.Dispose();
         _secondaryWindows.CloseAll();
         _placementService.Save();
@@ -791,7 +763,7 @@ public sealed class MainWindow : Window
     private void RebuildSensorTree()
     {
         MeasureStartup("MainWindow.RebuildSensorTree", RebuildSensorTreeCore, GetRootSizeDetail);
-        ScheduleDeviceColumnWidthSettle();
+        _columnMeasurer.ScheduleSettle();
         SyncTraySensors();
         SyncGadgetSensors();
         if (_startupCompletionRequested)
@@ -803,7 +775,7 @@ public sealed class MainWindow : Window
         if (_sensorTree == null)
             return;
 
-        _sensorRowGrids.Clear();
+        _columnMeasurer.ResetRows();
         _sensorTree.RootNodes.Clear();
         foreach (SensorTreeItemViewModel item in ViewModel.RootItems)
         {
@@ -817,7 +789,7 @@ public sealed class MainWindow : Window
 
     private void CompleteStartupTraceIfReady()
     {
-        if (_startupCompleteRecorded || _startupTrace is not { IsComplete: false } || _sensorRowGrids.Count == 0)
+        if (_startupCompleteRecorded || _startupTrace is not { IsComplete: false } || _columnMeasurer.RowCount == 0)
             return;
 
         _startupCompleteRecorded = true;
@@ -829,23 +801,6 @@ public sealed class MainWindow : Window
         _startupCompletionRequested = true;
         if (!DispatcherQueue.TryEnqueue(CompleteStartupTraceIfReady))
             CompleteStartupTraceIfReady();
-    }
-
-    private void DeviceColumnWidthSettleTimer_Tick(DispatcherQueueTimer sender, object args)
-    {
-        _deviceColumnWidthSettleTimer.Stop();
-        _deviceColumnWidthSettled = true;
-        UpdateSensorColumnWidths();
-    }
-
-    private void ScheduleDeviceColumnWidthSettle()
-    {
-        if (_sensorRowGrids.Count == 0)
-            return;
-
-        _deviceColumnWidthSettled = false;
-        _deviceColumnWidthSettleTimer.Stop();
-        _deviceColumnWidthSettleTimer.Start();
     }
 
     private static DataTemplate CreateTreeViewNodeContentTemplate()
@@ -882,8 +837,7 @@ public sealed class MainWindow : Window
 
     private FrameworkElement CreateSensorRow(SensorTreeItemViewModel item)
     {
-        Grid row = CreateSensorRowGrid();
-        _sensorRowGrids.Add(row);
+        Grid row = _columnMeasurer.CreateRowGrid();
         row.DataContext = item;
         row.Padding = new Thickness(0, 3, 0, 3);
 
@@ -1091,124 +1045,7 @@ public sealed class MainWindow : Window
 
     private void UpdateSensorColumnWidths()
     {
-        MeasureStartup("MainWindow.UpdateSensorColumnWidths", UpdateSensorColumnWidthsCore, () => FormattableString.Invariant($"rows={_sensorRowGrids.Count}, cacheEntries={_textMeasurementCache.Count}, deviceWidth={_sensorColumnWidths[0]:F0}, settled={_deviceColumnWidthSettled}"));
-    }
-
-    private void UpdateSensorColumnWidthsCore()
-    {
-        double sensorWidth = MeasureText("Sensor", true) + SensorColumnPadding;
-        double valueWidth = ViewModel.ShowValueColumn ? MeasureText("Value", true) + ValueColumnPadding : 0;
-        double minWidth = ViewModel.ShowMinColumn ? MeasureText("Min", true) + ValueColumnPadding : 0;
-        double maxWidth = ViewModel.ShowMaxColumn ? MeasureText("Max", true) + ValueColumnPadding : 0;
-
-        foreach (SensorTreeItemViewModel root in ViewModel.RootItems)
-            MeasureSensorColumnWidths(root, 0, ref sensorWidth, ref valueWidth, ref minWidth, ref maxWidth);
-
-        double deviceColumnWidth = NormalizeDeviceColumnWidth(sensorWidth);
-        if (!_deviceColumnWidthSettled)
-            deviceColumnWidth = Math.Max(deviceColumnWidth, _stableDeviceColumnWidth);
-
-        _sensorColumnWidths[0] = deviceColumnWidth;
-        _sensorColumnWidths[1] = Math.Ceiling(valueWidth);
-        _sensorColumnWidths[2] = Math.Ceiling(minWidth);
-        _sensorColumnWidths[3] = Math.Ceiling(maxWidth);
-
-        if (_sensorHeader != null)
-            ApplySensorColumnWidths(_sensorHeader);
-        foreach (Grid row in _sensorRowGrids)
-            ApplySensorColumnWidths(row);
-
-        RecordDeviceColumnWidthIfChanged();
-    }
-
-    private void MeasureSensorColumnWidths(
-        SensorTreeItemViewModel item,
-        int depth,
-        ref double sensorWidth,
-        ref double valueWidth,
-        ref double minWidth,
-        ref double maxWidth)
-    {
-        if (item.RowVisibility == Visibility.Visible)
-        {
-            sensorWidth = Math.Max(sensorWidth, MeasureText(item.Text) + SensorColumnPadding + depth * SensorTreeIndentWidth);
-            if (ViewModel.ShowValueColumn)
-                valueWidth = Math.Max(valueWidth, MeasureText(item.Value) + ValueColumnPadding);
-            if (ViewModel.ShowMinColumn)
-                minWidth = Math.Max(minWidth, MeasureText(item.Min) + ValueColumnPadding);
-            if (ViewModel.ShowMaxColumn)
-                maxWidth = Math.Max(maxWidth, MeasureText(item.Max) + ValueColumnPadding);
-        }
-
-        foreach (SensorTreeItemViewModel child in item.Children)
-            MeasureSensorColumnWidths(child, depth + 1, ref sensorWidth, ref valueWidth, ref minWidth, ref maxWidth);
-    }
-
-    private double MeasureText(string text, bool bold = false)
-    {
-        (string Text, bool Bold) key = (text, bold);
-        if (_textMeasurementCache.TryGetValue(key, out double width))
-            return width;
-
-        if (_textMeasurementCache.Count >= MaxTextMeasurementCacheEntries)
-            _textMeasurementCache.Clear();
-
-        // Reuse a single TextBlock for measurement instead of allocating one per cache miss. This runs for every
-        // sensor's Value/Min/Max on each update tick, and the frequently-changing value strings miss the cache, so the
-        // old code created and discarded a WinUI element (with a native peer) on nearly every call — avoidable churn.
-        _measurementTextBlock ??= new TextBlock();
-        _measurementTextBlock.Text = text;
-        _measurementTextBlock.FontWeight = new global::Windows.UI.Text.FontWeight { Weight = bold ? (ushort)600 : (ushort)400 };
-        _measurementTextBlock.Measure(new global::Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
-        width = _measurementTextBlock.DesiredSize.Width;
-        _textMeasurementCache[key] = width;
-        return width;
-    }
-
-    private static double NormalizeDeviceColumnWidth(double width)
-    {
-        if (!double.IsFinite(width))
-            width = DefaultSensorColumnWidth;
-
-        return Math.Ceiling(Math.Clamp(width, MinimumSensorColumnWidth, MaximumSensorColumnWidth));
-    }
-
-    private void RecordDeviceColumnWidthIfChanged()
-    {
-        if (!_deviceColumnWidthSettled || _sensorRowGrids.Count == 0)
-            return;
-
-        double measuredWidth = NormalizeDeviceColumnWidth(_sensorColumnWidths[0]);
-        _stableDeviceColumnWidth = measuredWidth;
-        double savedWidth = NormalizeDeviceColumnWidth(ViewModel.Settings.GetValue(DeviceColumnWidthSetting, DefaultSensorColumnWidth));
-        if (Math.Abs(measuredWidth - savedWidth) < 0.5)
-            return;
-
-        ViewModel.Settings.SetValue(DeviceColumnWidthSetting, measuredWidth);
-        _startupTrace?.Mark("MainWindow.RecordDeviceColumnWidth", FormattableString.Invariant($"width={measuredWidth:F0}, rows={_sensorRowGrids.Count}"));
-    }
-
-    private void ApplySensorColumnWidths(Grid grid)
-    {
-        for (int i = 0; i < grid.ColumnDefinitions.Count && i < _sensorColumnWidths.Length; i++)
-            grid.ColumnDefinitions[i].Width = new GridLength(_sensorColumnWidths[i]);
-    }
-
-    private Grid CreateSensorRowGrid()
-    {
-        Grid grid = new()
-        {
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(),
-                new ColumnDefinition(),
-                new ColumnDefinition(),
-                new ColumnDefinition()
-            }
-        };
-
-        ApplySensorColumnWidths(grid);
-        return grid;
+        MeasureStartup("MainWindow.UpdateSensorColumnWidths", _columnMeasurer.UpdateWidths, () => FormattableString.Invariant($"rows={_columnMeasurer.RowCount}, cacheEntries={_columnMeasurer.CacheEntryCount}, deviceWidth={_columnMeasurer.DeviceColumnWidth:F0}, settled={_columnMeasurer.IsSettled}"));
     }
 
     private TextBlock CreateHeaderText(string text, int column, Visibility visibility, string? bindingPath = null)
