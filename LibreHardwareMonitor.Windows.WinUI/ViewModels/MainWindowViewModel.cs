@@ -90,7 +90,6 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     private readonly IRemoteWebServer _remoteWebServer;
     private readonly StartupService _startupService;
     private readonly IStartupTracer _startupTrace;
-    private readonly bool _ownsServices;
     private AppThemeMode _themeMode;
     private int _loggingIntervalIndex;
     private PlotLocation _plotLocation;
@@ -138,32 +137,6 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         _remoteWebServer = remoteWebServer;
         _plotTracking = plotTracking;
         _startupService = startupService;
-        InitializeFromSettings(settings);
-    }
-
-    // Transitional constructor that builds the domain graph the legacy way for callers that do not yet
-    // resolve the view model from the container. Removed once MainWindow is DI-resolved (di-app-invert).
-    internal MainWindowViewModel(AppSettings settings, IStartupTracer startupTrace)
-    {
-        Settings = settings;
-        _startupTrace = startupTrace;
-        _startupTrace.Mark("MainWindowViewModel.Constructor.Begin");
-        _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
-        HardwareMonitorService hardwareMonitor = new(settings);
-        _hardwareMonitor = hardwareMonitor;
-        _logger = new Logger(hardwareMonitor.Computer);
-        _sensorSelection = new SensorSelectionService(settings);
-        _remoteWebServer = new RemoteWebServer(
-            hardwareMonitor.Computer,
-            hardwareMonitor.SensorReadLock,
-            settings.GetValue("listenerIp", "?"),
-            settings.GetValue("listenerPort", 8085),
-            settings.GetValue("authenticationEnabled", false),
-            settings.GetValue("authenticationUserName", ""),
-            settings.GetValue("authenticationPassword", ""));
-        _plotTracking = new PlotTrackingService();
-        _startupService = new StartupService();
-        _ownsServices = true;
         InitializeFromSettings(settings);
     }
 
@@ -789,8 +762,6 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         Settings.SetValue("authenticationUserName", AuthWebServerUserName);
         Settings.SetValue("authenticationPassword", _remoteWebServer.PasswordHash);
         _remoteWebServer.Quit();
-        if (_ownsServices)
-            _hardwareMonitor.Dispose();
         Save();
     }
 

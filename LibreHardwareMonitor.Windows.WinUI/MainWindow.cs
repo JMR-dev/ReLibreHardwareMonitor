@@ -456,16 +456,22 @@ public sealed partial class MainWindow : Window
         }
 
         _isShuttingDown = true;
-        _timer.Stop();
-        _columnMeasurer.StopSettleTimer();
-        _trayIconService.Dispose();
-        _secondaryWindows.CloseAll();
-        _placementService.Save();
-
-        // The container owns the view model and domain services. Disposing the provider runs
-        // MainWindowViewModel.Dispose first (reverse construction order) to persist settings while the
-        // hardware monitor and web server are still alive, then disposes those services and the tracer.
-        (_serviceProvider as IDisposable)?.Dispose();
+        try
+        {
+            _timer.Stop();
+            _columnMeasurer.StopSettleTimer();
+            _trayIconService.Dispose();
+            _secondaryWindows.CloseAll();
+            _placementService.Save();
+        }
+        finally
+        {
+            // The container owns the view model and domain services. Disposing the provider runs
+            // MainWindowViewModel.Dispose first (reverse construction order) to persist settings while the
+            // hardware monitor and web server are still alive, then disposes those services and the tracer.
+            // This MUST run even if a teardown step above throws, so the ring0 driver is always unloaded.
+            (_serviceProvider as IDisposable)?.Dispose();
+        }
     }
 
     private void AppWindow_Changed(AppWindow sender, AppWindowChangedEventArgs args)

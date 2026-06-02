@@ -28,6 +28,7 @@ public sealed class HardwareMonitorService : IHardwareMonitorService
     private readonly UpdateVisitor _updateVisitor = new();
     private readonly TreeRebuildCoalescer _treeRebuildCoalescer;
     private bool _isOpen;
+    private bool _disposed;
 
     public HardwareMonitorService(AppSettings settings)
     {
@@ -199,6 +200,11 @@ public sealed class HardwareMonitorService : IHardwareMonitorService
 
     public void Dispose()
     {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
         // Clear before closing so any tree-rebuild task still pending its delay bails instead of rebuilding from a
         // half-closed Computer.
         _isOpen = false;
