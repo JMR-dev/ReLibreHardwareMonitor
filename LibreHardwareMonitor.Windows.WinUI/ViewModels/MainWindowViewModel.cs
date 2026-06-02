@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
 using LibreHardwareMonitor.Hardware.Storage;
 using LibreHardwareMonitor.Windows.WinUI.Services;
+using LibreHardwareMonitor.Windows.WinUI.Services.Tracing;
 using LibreHardwareMonitor.Windows.WinUI.Utilities;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
@@ -88,7 +89,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     private readonly SensorSelectionService _sensorSelection;
     private readonly RemoteWebServer _remoteWebServer;
     private readonly StartupService _startupService = new();
-    private readonly WinUiStartupTrace? _startupTrace;
+    private readonly IStartupTracer _startupTrace;
     private AppThemeMode _themeMode;
     private int _loggingIntervalIndex;
     private PlotLocation _plotLocation;
@@ -115,15 +116,15 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     private TemperatureUnit _temperatureUnit;
     private int _updateIntervalIndex;
 
-    public MainWindowViewModel(AppSettings settings) : this(settings, null)
+    public MainWindowViewModel(AppSettings settings) : this(settings, NoOpStartupTracer.Instance)
     {
     }
 
-    internal MainWindowViewModel(AppSettings settings, WinUiStartupTrace? startupTrace)
+    internal MainWindowViewModel(AppSettings settings, IStartupTracer startupTrace)
     {
         Settings = settings;
         _startupTrace = startupTrace;
-        _startupTrace?.Mark("MainWindowViewModel.Constructor.Begin");
+        _startupTrace.Mark("MainWindowViewModel.Constructor.Begin");
         _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
         _hardwareMonitor = new HardwareMonitorService(settings);
         _logger = new Logger(_hardwareMonitor.Computer);
@@ -162,7 +163,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         StorageDevice.ThrottleInterval = _throttleAtaUpdate ? TimeSpan.FromSeconds(30) : TimeSpan.Zero;
         _logger.LoggingInterval = LoggingIntervals[_loggingIntervalIndex];
         _logger.FileRotationMethod = (LoggerFileRotation)Math.Clamp(settings.GetValue("logger.fileRotation", 0), 0, 1);
-        _startupTrace?.Mark("MainWindowViewModel.Constructor.Complete");
+        _startupTrace.Mark("MainWindowViewModel.Constructor.Complete");
     }
 
     public event EventHandler? PlotInvalidated;
@@ -864,7 +865,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         try
         {
             IsHardwareLoading = true;
-            _startupTrace?.Mark("MainWindowViewModel.StartAsync.Begin");
+            _startupTrace.Mark("MainWindowViewModel.StartAsync.Begin");
             StatusText = "Initializing hardware sensors...";
             await MeasureStartupAsync("MainWindowViewModel.HardwareMonitor.OpenAsync", () => _hardwareMonitor.OpenAsync(raiseTreeRebuilt: false));
             MeasureStartup("MainWindowViewModel.UpdateRoot", UpdateRoot, GetRootDetail);
@@ -873,12 +874,12 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
             MeasureStartup("MainWindowViewModel.StartWebServerFromSettings", StartWebServerFromSettings);
             MeasureStartup("MainWindowViewModel.UpdateStatus", UpdateStatus, GetRootDetail);
             _isStarted = true;
-            _startupTrace?.Mark("MainWindowViewModel.StartAsync.Complete", GetRootDetail());
+            _startupTrace.Mark("MainWindowViewModel.StartAsync.Complete", GetRootDetail());
         }
         finally
         {
             IsHardwareLoading = false;
-            _startupTrace?.Mark("MainWindowViewModel.HardwareLoadingComplete", GetRootDetail());
+            _startupTrace.Mark("MainWindowViewModel.HardwareLoadingComplete", GetRootDetail());
             _isStarting = false;
         }
     }
@@ -951,7 +952,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
     private void MeasureStartup(string phase, Action action)
     {
-        if (_startupTrace is not { IsComplete: false })
+        if (_startupTrace.IsComplete)
         {
             action();
             return;
@@ -962,7 +963,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
     private void MeasureStartup(string phase, Action action, Func<string> getDetail)
     {
-        if (_startupTrace is not { IsComplete: false })
+        if (_startupTrace.IsComplete)
         {
             action();
             return;
@@ -973,7 +974,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
     private T MeasureStartup<T>(string phase, Func<T> action)
     {
-        if (_startupTrace is not { IsComplete: false })
+        if (_startupTrace.IsComplete)
             return action();
 
         return _startupTrace.Measure(phase, action);
@@ -981,7 +982,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
     private async Task MeasureStartupAsync(string phase, Func<Task> action)
     {
-        if (_startupTrace is not { IsComplete: false })
+        if (_startupTrace.IsComplete)
         {
             await action();
             return;

@@ -4,6 +4,7 @@
 
 using System;
 using System.Collections.Generic;
+using LibreHardwareMonitor.Windows.WinUI.Services.Tracing;
 using LibreHardwareMonitor.Windows.WinUI.ViewModels;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
@@ -24,7 +25,7 @@ internal sealed class SensorColumnMeasurer
     private static readonly TimeSpan SettleDelay = TimeSpan.FromSeconds(5);
 
     private readonly MainWindowViewModel _viewModel;
-    private readonly WinUiStartupTrace? _startupTrace;
+    private readonly IStartupTracer _startupTrace;
     private readonly Dictionary<(string Text, bool Bold), double> _cache = new();
     private readonly List<Grid> _rowGrids = [];
     private readonly DispatcherQueueTimer _settleTimer;
@@ -34,7 +35,7 @@ internal sealed class SensorColumnMeasurer
     private double _stableDeviceColumnWidth = DefaultDeviceColumnWidth;
     private bool _settled;
 
-    public SensorColumnMeasurer(DispatcherQueue dispatcherQueue, MainWindowViewModel viewModel, WinUiStartupTrace? startupTrace)
+    public SensorColumnMeasurer(DispatcherQueue dispatcherQueue, MainWindowViewModel viewModel, IStartupTracer startupTrace)
     {
         _viewModel = viewModel ?? throw new ArgumentNullException(nameof(viewModel));
         _startupTrace = startupTrace;
@@ -215,6 +216,6 @@ internal sealed class SensorColumnMeasurer
             return;
 
         _viewModel.Settings.SetValue(DeviceColumnWidthSetting, measuredWidth);
-        _startupTrace?.Mark("MainWindow.RecordDeviceColumnWidth", FormattableString.Invariant($"width={measuredWidth:F0}, rows={_rowGrids.Count}"));
+        _startupTrace.Mark("MainWindow.RecordDeviceColumnWidth", FormattableString.Invariant($"width={measuredWidth:F0}, rows={_rowGrids.Count}"));
     }
 }

@@ -5,7 +5,7 @@
 using System;
 using System.IO;
 using System.Threading.Tasks;
-using LibreHardwareMonitor.Windows.WinUI.Services;
+using LibreHardwareMonitor.Windows.WinUI.Services.Tracing;
 using Microsoft.UI.Xaml;
 using IOPath = System.IO.Path;
 
@@ -14,13 +14,13 @@ namespace LibreHardwareMonitor.Windows.WinUI;
 public partial class App : Application
 {
     private bool _launchStarted;
-    private readonly WinUiStartupTrace? _startupTrace;
+    private readonly IStartupTracer _startupTrace;
     private Window? _window;
 
     public App()
     {
-        _startupTrace = WinUiStartupTrace.Create();
-        _startupTrace?.Mark("App.Constructor.Begin");
+        _startupTrace = StartupTracer.Create();
+        _startupTrace.Mark("App.Constructor.Begin");
         MeasureStartup("App.WireExceptionHandlers", () =>
         {
             UnhandledException += App_UnhandledException;
@@ -28,8 +28,8 @@ public partial class App : Application
             TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
         });
         MeasureStartup("App.InitializeComponent", InitializeComponent);
-        _startupTrace?.Mark("App.Constructor.Complete");
-        _startupTrace?.Flush();
+        _startupTrace.Mark("App.Constructor.Complete");
+        _startupTrace.Flush();
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
@@ -45,18 +45,18 @@ public partial class App : Application
         _launchStarted = true;
         try
         {
-            _startupTrace?.Mark("App.LaunchMainWindow.Begin");
+            _startupTrace.Mark("App.LaunchMainWindow.Begin");
             MainWindow mainWindow = MeasureStartup("App.CreateMainWindow", () => new MainWindow(_startupTrace));
             _window = mainWindow;
             MeasureStartup("App.ActivateWindow", mainWindow.Activate);
             MeasureStartup("App.StartMonitoringAfterActivation", mainWindow.StartMonitoringAfterActivation);
-            _startupTrace?.Mark("App.LaunchMainWindow.Complete");
-            _startupTrace?.Flush();
+            _startupTrace.Mark("App.LaunchMainWindow.Complete");
+            _startupTrace.Flush();
         }
         catch (Exception ex)
         {
-            _startupTrace?.Mark("App.LaunchMainWindow.Exception", $"{ex.GetType().FullName}: {ex.Message}");
-            _startupTrace?.Flush();
+            _startupTrace.Mark("App.LaunchMainWindow.Exception", $"{ex.GetType().FullName}: {ex.Message}");
+            _startupTrace.Flush();
             WriteExceptionLog("Window launch failed", ex);
             throw;
         }
@@ -64,20 +64,11 @@ public partial class App : Application
 
     private void MeasureStartup(string phase, Action action)
     {
-        if (_startupTrace == null)
-        {
-            action();
-            return;
-        }
-
         _startupTrace.Measure(phase, action);
     }
 
     private T MeasureStartup<T>(string phase, Func<T> action)
     {
-        if (_startupTrace == null)
-            return action();
-
         return _startupTrace.Measure(phase, action);
     }
 

@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
 using LibreHardwareMonitor.Windows.WinUI.Controls;
 using LibreHardwareMonitor.Windows.WinUI.Services;
+using LibreHardwareMonitor.Windows.WinUI.Services.Tracing;
 using LibreHardwareMonitor.Windows.WinUI.Utilities;
 using LibreHardwareMonitor.Windows.WinUI.ViewModels;
 using Microsoft.UI;
@@ -33,7 +34,7 @@ public sealed partial class MainWindow : Window
     private readonly WindowChromeManager _chromeManager;
     private readonly WindowPlacementService _placementService;
     private readonly DispatcherQueueTimer _timer;
-    private readonly WinUiStartupTrace? _startupTrace;
+    private readonly IStartupTracer _startupTrace;
     private readonly TrayIconService _trayIconService;
     private readonly DialogService _dialogService;
     private readonly SensorColumnMeasurer _columnMeasurer;
@@ -50,14 +51,14 @@ public sealed partial class MainWindow : Window
     private bool _sensorTreeRebuildQueued;
     private bool _sensorColumnWidthUpdateQueued;
 
-    public MainWindow() : this(null)
+    public MainWindow() : this(NoOpStartupTracer.Instance)
     {
     }
 
-    internal MainWindow(WinUiStartupTrace? startupTrace)
+    internal MainWindow(IStartupTracer startupTrace)
     {
         _startupTrace = startupTrace;
-        _startupTrace?.Mark("MainWindow.Constructor.Begin");
+        _startupTrace.Mark("MainWindow.Constructor.Begin");
         AppSettings settings = MeasureStartup("MainWindow.LoadSettings", AppSettings.LoadDefault);
         ViewModel = MeasureStartup("MainWindow.CreateViewModel", () => new MainWindowViewModel(settings, _startupTrace));
 
@@ -159,14 +160,14 @@ public sealed partial class MainWindow : Window
 
             Closed += MainWindow_Closed;
         });
-        _startupTrace?.Mark("MainWindow.Constructor.Complete");
+        _startupTrace.Mark("MainWindow.Constructor.Complete");
     }
 
     public MainWindowViewModel ViewModel { get; }
 
     public void StartMonitoringAfterActivation()
     {
-        _startupTrace?.Mark("MainWindow.StartMonitoringAfterActivation.Queued");
+        _startupTrace.Mark("MainWindow.StartMonitoringAfterActivation.Queued");
         if (!DispatcherQueue.TryEnqueue(async () =>
         {
             if (_isMonitoringStarted)
@@ -175,27 +176,27 @@ public sealed partial class MainWindow : Window
             _isMonitoringStarted = true;
             try
             {
-                _startupTrace?.Mark("MainWindow.StartMonitoringAfterActivation.Begin");
+                _startupTrace.Mark("MainWindow.StartMonitoringAfterActivation.Begin");
                 ApplyInitialWindowState();
                 await MeasureStartupAsync("MainWindowViewModel.StartAsync", ViewModel.StartAsync);
                 SyncTraySensors();
                 SyncGadgetSensors();
                 UpdateGadgetVisibility();
                 MeasureStartup("MainWindow.StartTimer", _timer.Start);
-                _startupTrace?.Mark("MainWindow.StartMonitoringAfterActivation.Complete");
+                _startupTrace.Mark("MainWindow.StartMonitoringAfterActivation.Complete");
                 RequestStartupTraceComplete();
-                _startupTrace?.Flush();
+                _startupTrace.Flush();
             }
             catch (Exception ex)
             {
-                _startupTrace?.Mark("MainWindow.StartMonitoringAfterActivation.Exception", $"{ex.GetType().FullName}: {ex.Message}");
-                _startupTrace?.Flush();
+                _startupTrace.Mark("MainWindow.StartMonitoringAfterActivation.Exception", $"{ex.GetType().FullName}: {ex.Message}");
+                _startupTrace.Flush();
                 RecordRuntimeError("Hardware initialization failed", ex);
             }
         }))
         {
-            _startupTrace?.Mark("MainWindow.StartMonitoringAfterActivation.EnqueueFailed");
-            _startupTrace?.Flush();
+            _startupTrace.Mark("MainWindow.StartMonitoringAfterActivation.EnqueueFailed");
+            _startupTrace.Flush();
         }
     }
 
@@ -207,8 +208,8 @@ public sealed partial class MainWindow : Window
     private void RootGrid_Loaded(object sender, RoutedEventArgs e)
     {
         RootGrid.Loaded -= RootGrid_Loaded;
-        _startupTrace?.Mark("MainWindow.RootLoaded", GetRootSizeDetail());
-        _startupTrace?.Flush();
+        _startupTrace.Mark("MainWindow.RootLoaded", GetRootSizeDetail());
+        _startupTrace.Flush();
     }
 
     private void RootGrid_LayoutUpdated(object? sender, object e)
@@ -218,13 +219,13 @@ public sealed partial class MainWindow : Window
 
         _firstLayoutRecorded = true;
         RootGrid.LayoutUpdated -= RootGrid_LayoutUpdated;
-        _startupTrace?.Mark("MainWindow.FirstLayoutUpdated", GetRootSizeDetail());
-        _startupTrace?.Flush();
+        _startupTrace.Mark("MainWindow.FirstLayoutUpdated", GetRootSizeDetail());
+        _startupTrace.Flush();
     }
 
     private void MeasureStartup(string phase, Action action)
     {
-        if (_startupTrace is not { IsComplete: false })
+        if (_startupTrace.IsComplete)
         {
             action();
             return;
@@ -235,7 +236,7 @@ public sealed partial class MainWindow : Window
 
     private void MeasureStartup(string phase, Action action, Func<string> getDetail)
     {
-        if (_startupTrace is not { IsComplete: false })
+        if (_startupTrace.IsComplete)
         {
             action();
             return;
@@ -246,7 +247,7 @@ public sealed partial class MainWindow : Window
 
     private T MeasureStartup<T>(string phase, Func<T> action)
     {
-        if (_startupTrace is not { IsComplete: false })
+        if (_startupTrace.IsComplete)
             return action();
 
         return _startupTrace.Measure(phase, action);
@@ -254,7 +255,7 @@ public sealed partial class MainWindow : Window
 
     private async Task MeasureStartupAsync(string phase, Func<Task> action)
     {
-        if (_startupTrace is not { IsComplete: false })
+        if (_startupTrace.IsComplete)
         {
             await action();
             return;
@@ -427,8 +428,8 @@ public sealed partial class MainWindow : Window
 
     private void RecordRuntimeError(string message, Exception exception)
     {
-        _startupTrace?.Mark("MainWindow.RuntimeError", $"{message}: {exception.GetType().FullName}: {exception.Message}");
-        _startupTrace?.Flush();
+        _startupTrace.Mark("MainWindow.RuntimeError", $"{message}: {exception.GetType().FullName}: {exception.Message}");
+        _startupTrace.Flush();
 
         // Use a dedicated runtime log (not the startup log that App.xaml.cs appends to) and write it only once, so a
         // recurring per-tick failure neither clobbers the startup diagnostics nor grows the file without bound.
@@ -466,7 +467,7 @@ public sealed partial class MainWindow : Window
         _secondaryWindows.CloseAll();
         _placementService.Save();
         ViewModel.Dispose();
-        _startupTrace?.Dispose();
+        _startupTrace.Dispose();
     }
 
     private void AppWindow_Changed(AppWindow sender, AppWindowChangedEventArgs args)
@@ -566,7 +567,7 @@ public sealed partial class MainWindow : Window
 
     private void CompleteStartupTraceIfReady()
     {
-        if (_startupCompleteRecorded || _startupTrace is not { IsComplete: false } || _columnMeasurer.RowCount == 0)
+        if (_startupCompleteRecorded || _startupTrace.IsComplete || _columnMeasurer.RowCount == 0)
             return;
 
         _startupCompleteRecorded = true;

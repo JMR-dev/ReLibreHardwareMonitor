@@ -11,13 +11,14 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace LibreHardwareMonitor.Windows.WinUI.Services;
+namespace LibreHardwareMonitor.Windows.WinUI.Services.Tracing;
 
-internal sealed class WinUiStartupTrace : IDisposable
+/// <summary>
+/// File-writing startup tracer. Records phase timings and flushes them to a CSV-style log.
+/// Created via <see cref="StartupTracer.Create"/> when startup timing is enabled.
+/// </summary>
+internal sealed class FileStartupTracer : IStartupTracer
 {
-    private const string EnabledEnvironmentVariable = "LHM_WINUI_STARTUP_TIMING";
-    private const string PathEnvironmentVariable = "LHM_WINUI_STARTUP_TIMING_PATH";
-
     private readonly List<Entry> _entries = new();
     private readonly string _fileName;
     private readonly object _lock = new();
@@ -25,9 +26,9 @@ internal sealed class WinUiStartupTrace : IDisposable
     private bool _completed;
     private bool _disposed;
 
-    private WinUiStartupTrace()
+    internal FileStartupTracer(string fileName)
     {
-        _fileName = GetLogFileName();
+        _fileName = fileName;
         _totalStopwatch = Stopwatch.StartNew();
         Mark("WinUIStartupTrace.Begin");
     }
@@ -39,11 +40,6 @@ internal sealed class WinUiStartupTrace : IDisposable
             lock (_lock)
                 return _completed || _disposed;
         }
-    }
-
-    public static WinUiStartupTrace? Create()
-    {
-        return IsEnabled() ? new WinUiStartupTrace() : null;
     }
 
     public void Complete(string phase, string detail = "")
@@ -229,38 +225,6 @@ internal sealed class WinUiStartupTrace : IDisposable
         {
             return $"Detail unavailable: {ex.GetType().FullName}: {ex.Message}";
         }
-    }
-
-    private static string GetLogFileName()
-    {
-        string? configuredPath = Environment.GetEnvironmentVariable(PathEnvironmentVariable);
-
-        string fileName = $"LibreHardwareMonitor.WinUIStartupTiming-{DateTime.Now:yyyyMMdd-HHmmss-fff}.log";
-        if (string.IsNullOrWhiteSpace(configuredPath))
-            return Path.Combine(AppContext.BaseDirectory, fileName);
-
-        if (configuredPath.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal)
-            || configuredPath.EndsWith(Path.AltDirectorySeparatorChar.ToString(), StringComparison.Ordinal)
-            || Directory.Exists(configuredPath))
-        {
-            return Path.Combine(configuredPath, fileName);
-        }
-
-        return configuredPath;
-    }
-
-    private static bool IsEnabled()
-    {
-        string environmentValue = Environment.GetEnvironmentVariable(EnabledEnvironmentVariable) ?? "";
-        return IsTruthy(environmentValue);
-    }
-
-    private static bool IsTruthy(string value)
-    {
-        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("true", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("on", StringComparison.OrdinalIgnoreCase);
     }
 
     private void AddEntry(string phase, TimeSpan elapsed, string status, string detail)
