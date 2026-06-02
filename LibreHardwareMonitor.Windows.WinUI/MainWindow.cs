@@ -8,7 +8,6 @@ using System.Collections.Specialized;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
 using LibreHardwareMonitor.Windows.WinUI.Controls;
@@ -24,7 +23,6 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Data;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
-using Windows.Graphics;
 using WinRT.Interop;
 using IOPath = System.IO.Path;
 
@@ -44,6 +42,8 @@ public sealed class MainWindow : Window
     private const int MaxTextMeasurementCacheEntries = 4096;
 
     private readonly AppWindow _appWindow;
+    private readonly WindowChromeManager _chromeManager;
+    private readonly WindowPlacementService _placementService;
     private readonly Grid _contentGrid;
     private readonly DispatcherQueueTimer _deviceColumnWidthSettleTimer;
     private readonly DispatcherQueueTimer _timer;
@@ -70,7 +70,6 @@ public sealed class MainWindow : Window
     private bool _isClosingForExit;
     private bool _isShuttingDown;
     private bool _runtimeErrorLogged;
-    private bool _isMainWindowHidden;
     private bool _isMonitoringStarted;
     private bool _startupCompletionRequested;
     private bool _startupCompleteRecorded;
@@ -97,6 +96,9 @@ public sealed class MainWindow : Window
             appWindow.Title = "Libre Hardware Monitor";
             return appWindow;
         });
+        IntPtr mainHwnd = WindowNative.GetWindowHandle(this);
+        _chromeManager = new WindowChromeManager(mainHwnd);
+        _placementService = new WindowPlacementService(_appWindow, settings, mainHwnd);
 
         _trayIconService = MeasureStartup("MainWindow.CreateTrayIconService", () => new TrayIconService(
             WindowNative.GetWindowHandle(this),
@@ -126,8 +128,8 @@ public sealed class MainWindow : Window
         _sensorTree = sensorTree;
         _plotView = plotView;
 
-        MeasureStartup("MainWindow.RestoreWindowBounds", RestoreWindowBounds);
-        MeasureStartup("MainWindow.MaximizeWindow", MaximizeWindow);
+        MeasureStartup("MainWindow.RestoreWindowBounds", _placementService.Restore);
+        MeasureStartup("MainWindow.MaximizeWindow", _placementService.Maximize);
         MeasureStartup("MainWindow.ApplyTheme", ApplyTheme);
         MeasureStartup("MainWindow.UpdatePlotLayout", UpdatePlotLayout);
 
@@ -710,7 +712,7 @@ public sealed class MainWindow : Window
         _deviceColumnWidthSettleTimer.Stop();
         _trayIconService.Dispose();
         CloseSecondaryWindows();
-        SaveWindowBounds();
+        _placementService.Save();
         ViewModel.Dispose();
         _startupTrace?.Dispose();
     }
@@ -759,11 +761,15 @@ public sealed class MainWindow : Window
 
     private void HideShowMainWindow()
     {
-        IntPtr hwnd = WindowNative.GetWindowHandle(this);
-        if (_isMainWindowHidden || !IsWindowVisible(hwnd) || IsIconic(hwnd))
-            RestoreMainWindow();
+        if (_chromeManager.IsHiddenOrMinimizedOrInvisible)
+        {
+            _chromeManager.Restore();
+            Activate();
+        }
         else
+        {
             HideMainWindowToTray();
+        }
     }
 
     private void MinimizeOrHideMainWindow()
@@ -771,28 +777,12 @@ public sealed class MainWindow : Window
         if (ViewModel.MinimizeToTray)
             HideMainWindowToTray();
         else
-        {
-            _isMainWindowHidden = false;
-            ShowWindow(WindowNative.GetWindowHandle(this), ShowWindowMinimize);
-        }
+            _chromeManager.Minimize();
     }
 
     private void HideMainWindowToTray()
     {
-        _isMainWindowHidden = true;
-        ShowWindow(WindowNative.GetWindowHandle(this), ShowWindowHide);
-    }
-
-    private void RestoreMainWindow()
-    {
-        IntPtr hwnd = WindowNative.GetWindowHandle(this);
-        _isMainWindowHidden = false;
-        ShowWindow(hwnd, ShowWindowShow);
-        // Only un-minimize. The window is hidden to the tray with SW_HIDE while keeping its maximized state, so
-        // SW_SHOW alone brings it back as it was; an unconditional SW_RESTORE would also un-maximize it.
-        if (IsIconic(hwnd))
-            ShowWindow(hwnd, ShowWindowRestore);
-        Activate();
+        _chromeManager.HideToTray();
     }
 
     private void SyncTraySensors()
@@ -1161,45 +1151,6 @@ public sealed class MainWindow : Window
         _plotWindow?.ApplyTheme(ViewModel.ThemeMode);
     }
 
-    private void RestoreWindowBounds()
-    {
-        // AppWindow.Resize takes physical pixels and the app is PerMonitorV2 DPI-aware, so the logical default/minimum
-        // sizes must be scaled by the window's DPI. Without this, on a high-DPI display (e.g. a 200% laptop panel) the
-        // window — and any SW_RESTORE from the tray, which un-maximizes to this size — came out at half size.
-        double scale = GetWindowScale();
-        int minWidth = (int)Math.Round(470 * scale);
-        int minHeight = (int)Math.Round(640 * scale);
-        int width = Math.Max(minWidth, ViewModel.Settings.GetValue("mainForm.Width", (int)Math.Round(760 * scale)));
-        int height = Math.Max(minHeight, ViewModel.Settings.GetValue("mainForm.Height", (int)Math.Round(680 * scale)));
-        _appWindow.Resize(new SizeInt32(width, height));
-
-        int x = ViewModel.Settings.GetValue("mainForm.Location.X", int.MinValue);
-        int y = ViewModel.Settings.GetValue("mainForm.Location.Y", int.MinValue);
-        if (x != int.MinValue && y != int.MinValue)
-            _appWindow.Move(new PointInt32(x, y));
-    }
-
-    private double GetWindowScale()
-    {
-        uint dpi = GetDpiForWindow(WindowNative.GetWindowHandle(this));
-        return dpi == 0 ? 1.0 : dpi / 96.0;
-    }
-
-    private void MaximizeWindow()
-    {
-        if (_appWindow.Presenter is OverlappedPresenter presenter)
-            presenter.Maximize();
-    }
-
-    private void SaveWindowBounds()
-    {
-        ViewModel.Settings.SetValue("mainForm.Location.X", _appWindow.Position.X);
-        ViewModel.Settings.SetValue("mainForm.Location.Y", _appWindow.Position.Y);
-        ViewModel.Settings.SetValue("mainForm.Width", _appWindow.Size.Width);
-        ViewModel.Settings.SetValue("mainForm.Height", _appWindow.Size.Height);
-        ViewModel.Save();
-    }
-
     private void UpdateSensorColumnWidths()
     {
         MeasureStartup("MainWindow.UpdateSensorColumnWidths", UpdateSensorColumnWidthsCore, () => FormattableString.Invariant($"rows={_sensorRowGrids.Count}, cacheEntries={_textMeasurementCache.Count}, deviceWidth={_sensorColumnWidths[0]:F0}, settled={_deviceColumnWidthSettled}"));
@@ -1397,40 +1348,6 @@ public sealed class MainWindow : Window
         item.Click += (_, _) => setter(item.IsChecked);
         return item;
     }
-
-    private const int ShowWindowHide = 0;
-    private const int ShowWindowShow = 5;
-    private const int ShowWindowMinimize = 6;
-    private const int ShowWindowRestore = 9;
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool ShowWindow(IntPtr windowHandle, int command);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsWindowVisible(IntPtr windowHandle);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsIconic(IntPtr windowHandle);
-
-    [DllImport("user32.dll")]
-    private static extern uint GetDpiForWindow(IntPtr windowHandle);
-
-    private sealed record PlotBounds(double Left, double Top, double Width, double Height)
-    {
-        public double Bottom => Top + Height;
-
-        public double Right => Left + Width;
-    }
-
-    private sealed record PlotAxisLayout(SensorType SensorType, string Unit, double Top, double Height, double MinValue, double MaxValue)
-    {
-        public double Bottom => Top + Height;
-    }
-
-    private sealed record PlotSeriesSample(PlotSeriesViewModel Series, IReadOnlyList<PlotPointViewModel> Points);
 
     private static void Bind(DependencyObject target, DependencyProperty property, object source, string path, BindingMode mode = BindingMode.OneWay)
     {
