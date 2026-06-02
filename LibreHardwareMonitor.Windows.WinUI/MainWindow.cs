@@ -10,6 +10,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
+using LibreHardwareMonitor.Windows.WinUI.Composition;
 using LibreHardwareMonitor.Windows.WinUI.Controls;
 using LibreHardwareMonitor.Windows.WinUI.Services;
 using LibreHardwareMonitor.Windows.WinUI.Services.Tracing;
@@ -35,6 +36,7 @@ public sealed partial class MainWindow : Window
     private readonly WindowPlacementService _placementService;
     private readonly DispatcherQueueTimer _timer;
     private readonly IStartupTracer _startupTrace;
+    private readonly IServiceProvider _serviceProvider;
     private readonly TrayIconService _trayIconService;
     private readonly DialogService _dialogService;
     private readonly SensorColumnMeasurer _columnMeasurer;
@@ -51,41 +53,34 @@ public sealed partial class MainWindow : Window
     private bool _sensorTreeRebuildQueued;
     private bool _sensorColumnWidthUpdateQueued;
 
-    public MainWindow() : this(NoOpStartupTracer.Instance)
+    internal MainWindow(
+        MainWindowViewModel viewModel,
+        IStartupTracer startupTrace,
+        IMainWindowRuntimeFactory runtimeFactory,
+        IServiceProvider serviceProvider)
     {
-    }
-
-    internal MainWindow(IStartupTracer startupTrace)
-    {
+        ViewModel = viewModel;
         _startupTrace = startupTrace;
+        _serviceProvider = serviceProvider;
         _startupTrace.Mark("MainWindow.Constructor.Begin");
-        AppSettings settings = MeasureStartup("MainWindow.LoadSettings", AppSettings.LoadDefault);
-        ViewModel = MeasureStartup("MainWindow.CreateViewModel", () => new MainWindowViewModel(settings, _startupTrace));
 
-        _appWindow = MeasureStartup("MainWindow.GetAppWindow", () =>
-        {
-            IntPtr hwnd = WindowNative.GetWindowHandle(this);
-            WindowId windowId = Win32Interop.GetWindowIdFromWindow(hwnd);
-            AppWindow appWindow = AppWindow.GetFromWindowId(windowId);
-            appWindow.Title = "Libre Hardware Monitor";
-            return appWindow;
-        });
-        IntPtr mainHwnd = WindowNative.GetWindowHandle(this);
-        _chromeManager = new WindowChromeManager(mainHwnd);
-        _placementService = new WindowPlacementService(_appWindow, settings, mainHwnd);
+        MeasureStartup("MainWindow.InitializeComponent", InitializeComponent);
 
-        _trayIconService = MeasureStartup("MainWindow.CreateTrayIconService", () => new TrayIconService(
-            WindowNative.GetWindowHandle(this),
-            settings,
-            () => ViewModel.TemperatureUnit));
+        MainWindowRuntime runtime = MeasureStartup(
+            "MainWindow.CreateRuntimeServices",
+            () => runtimeFactory.Create(this, ViewModel, () => Content.XamlRoot, HideShowMainWindow));
+        _appWindow = runtime.AppWindow;
+        _chromeManager = runtime.ChromeManager;
+        _placementService = runtime.PlacementService;
+        _trayIconService = runtime.TrayIconService;
+        _dialogService = runtime.DialogService;
+        _secondaryWindows = runtime.SecondaryWindows;
+        _columnMeasurer = runtime.ColumnMeasurer;
+
         _trayIconService.IsMainIconEnabled = ViewModel.MinimizeToTray;
-        _dialogService = new DialogService(() => Content.XamlRoot, ViewModel, WindowNative.GetWindowHandle(this));
-        _secondaryWindows = new SecondaryWindowCoordinator(ViewModel, HideShowMainWindow);
-        _columnMeasurer = new SensorColumnMeasurer(DispatcherQueue, ViewModel, _startupTrace);
         MeasureStartup("MainWindow.ApplySavedDeviceColumnWidth", _columnMeasurer.ApplySavedWidth, () => FormattableString.Invariant($"width={_columnMeasurer.DeviceColumnWidth:F0}"));
         _columnMeasurer.SettleTriggered += (_, _) => UpdateSensorColumnWidths();
 
-        MeasureStartup("MainWindow.InitializeComponent", InitializeComponent);
         TryApplyMicaBackdrop();
         RootGrid.Loaded += RootGrid_Loaded;
         RootGrid.LayoutUpdated += RootGrid_LayoutUpdated;
@@ -466,8 +461,11 @@ public sealed partial class MainWindow : Window
         _trayIconService.Dispose();
         _secondaryWindows.CloseAll();
         _placementService.Save();
-        ViewModel.Dispose();
-        _startupTrace.Dispose();
+
+        // The container owns the view model and domain services. Disposing the provider runs
+        // MainWindowViewModel.Dispose first (reverse construction order) to persist settings while the
+        // hardware monitor and web server are still alive, then disposes those services and the tracer.
+        (_serviceProvider as IDisposable)?.Dispose();
     }
 
     private void AppWindow_Changed(AppWindow sender, AppWindowChangedEventArgs args)

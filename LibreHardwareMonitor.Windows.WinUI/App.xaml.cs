@@ -5,7 +5,10 @@
 using System;
 using System.IO;
 using System.Threading.Tasks;
+using LibreHardwareMonitor.Windows.WinUI.Composition;
 using LibreHardwareMonitor.Windows.WinUI.Services.Tracing;
+using LibreHardwareMonitor.Windows.WinUI.ViewModels;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
 using IOPath = System.IO.Path;
 
@@ -15,6 +18,7 @@ public partial class App : Application
 {
     private bool _launchStarted;
     private readonly IStartupTracer _startupTrace;
+    private ServiceProvider? _serviceProvider;
     private Window? _window;
 
     public App()
@@ -46,7 +50,13 @@ public partial class App : Application
         try
         {
             _startupTrace.Mark("App.LaunchMainWindow.Begin");
-            MainWindow mainWindow = MeasureStartup("App.CreateMainWindow", () => new MainWindow(_startupTrace));
+            _serviceProvider = MeasureStartup("App.BuildServiceProvider", () =>
+                new ServiceCollection().AddAppServices(_startupTrace).BuildServiceProvider());
+            MainWindow mainWindow = MeasureStartup("App.CreateMainWindow", () => new MainWindow(
+                _serviceProvider.GetRequiredService<MainWindowViewModel>(),
+                _startupTrace,
+                _serviceProvider.GetRequiredService<IMainWindowRuntimeFactory>(),
+                _serviceProvider));
             _window = mainWindow;
             MeasureStartup("App.ActivateWindow", mainWindow.Activate);
             MeasureStartup("App.StartMonitoringAfterActivation", mainWindow.StartMonitoringAfterActivation);
