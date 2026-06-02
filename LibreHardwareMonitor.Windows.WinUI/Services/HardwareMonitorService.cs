@@ -3,7 +3,6 @@
 // Copyright (C) LibreHardwareMonitor and Contributors.
 
 using System;
-using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -27,13 +26,13 @@ public sealed class HardwareMonitorService : IDisposable
 
     private readonly object _updateLock = new();
     private readonly UpdateVisitor _updateVisitor = new();
+    private readonly TreeRebuildCoalescer _treeRebuildCoalescer;
     private bool _isOpen;
-    private int _treeRebuildQueued;
-    private volatile bool _treeRebuildDirty;
 
     public HardwareMonitorService(AppSettings settings)
     {
         Settings = settings;
+        _treeRebuildCoalescer = new TreeRebuildCoalescer(() => RebuildTree(), () => _isOpen);
         ApplyWinUiHardwareDefaults();
         Computer = new Computer(settings);
         Computer.HardwareAdded += HardwareChanged;
@@ -269,42 +268,7 @@ public sealed class HardwareMonitorService : IDisposable
             storageDevice.ForceWakeup = Settings.GetValue("forceDriveWakeupItem", false);
 
         if (_isOpen)
-            QueueTreeRebuild();
+            _treeRebuildCoalescer.Request();
     }
 
-    private void QueueTreeRebuild()
-    {
-        _treeRebuildDirty = true;
-        if (Interlocked.Exchange(ref _treeRebuildQueued, 1) == 1)
-            return;
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await Task.Delay(100).ConfigureAwait(false);
-
-                // Rebuild until no change has arrived since the last rebuild began, so a HardwareAdded/Removed that lands
-                // while a rebuild is in flight is not coalesced away and lost.
-                while (_treeRebuildDirty)
-                {
-                    _treeRebuildDirty = false;
-                    if (_isOpen)
-                        RebuildTree();
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"Hardware tree rebuild failed: {ex}");
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _treeRebuildQueued, 0);
-
-                // A change may have slipped in between the loop's exit and clearing the flag; re-queue so it is honored.
-                if (_treeRebuildDirty)
-                    QueueTreeRebuild();
-            }
-        });
-    }
 }
