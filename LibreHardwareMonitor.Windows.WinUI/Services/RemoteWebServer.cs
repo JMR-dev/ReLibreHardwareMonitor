@@ -130,8 +130,8 @@ public sealed class RemoteWebServer : IRemoteWebServer
         try
         {
             _cts?.Cancel();
-            _listenerTask?.Wait(TimeSpan.FromSeconds(5));
             _listener.Stop();
+            _listenerTask?.Wait(TimeSpan.FromSeconds(5));
             _cts?.Dispose();
             _cts = null;
             _listenerTask = null;
