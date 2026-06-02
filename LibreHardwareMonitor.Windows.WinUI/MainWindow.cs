@@ -28,16 +28,14 @@ using IOPath = System.IO.Path;
 
 namespace LibreHardwareMonitor.Windows.WinUI;
 
-public sealed class MainWindow : Window
+public sealed partial class MainWindow : Window
 {
     private readonly AppWindow _appWindow;
     private readonly WindowChromeManager _chromeManager;
     private readonly WindowPlacementService _placementService;
-    private readonly Grid _contentGrid;
     private readonly DispatcherQueueTimer _timer;
     private readonly PlotView _plotView;
     private readonly Grid _plotPane;
-    private readonly Grid _rootGrid;
     private readonly TreeView _sensorTree;
     private readonly Grid _sensorPane;
     private readonly WinUiStartupTrace? _startupTrace;
@@ -91,26 +89,46 @@ public sealed class MainWindow : Window
         MeasureStartup("MainWindow.ApplySavedDeviceColumnWidth", _columnMeasurer.ApplySavedWidth, () => FormattableString.Invariant($"width={_columnMeasurer.DeviceColumnWidth:F0}"));
         _columnMeasurer.SettleTriggered += (_, _) => UpdateSensorColumnWidths();
 
-        Grid root = MeasureStartup("MainWindow.BuildRoot", BuildRoot);
-        MeasureStartup("MainWindow.AssignContent", () => Content = root);
-        _rootGrid = root;
-        _rootGrid.Loaded += RootGrid_Loaded;
-        _rootGrid.LayoutUpdated += RootGrid_LayoutUpdated;
+        MeasureStartup("MainWindow.InitializeComponent", InitializeComponent);
+        RootGrid.Background = new SolidColorBrush(Colors.White);
+        RootGrid.Loaded += RootGrid_Loaded;
+        RootGrid.LayoutUpdated += RootGrid_LayoutUpdated;
+        Bind(ContentGrid, UIElement.IsHitTestVisibleProperty, ViewModel, nameof(ViewModel.IsHardwareInteractionEnabled));
+        Bind(OverlayHost, UIElement.VisibilityProperty, ViewModel, nameof(ViewModel.HardwareLoadingVisibility));
 
-        (Grid contentGrid, Grid sensorPane, Grid plotPane, TreeView sensorTree, PlotView plotView) = MeasureStartup("MainWindow.ResolveControls", () =>
+        MeasureStartup("MainWindow.BuildMenuBar", () => MenuHost.Children.Add(BuildMenuBar()));
+
+        TreeView? builtTree = null;
+        Grid sensorPane = MeasureStartup("MainWindow.BuildSensorPane", () =>
         {
-            Grid resolvedContentGrid = (Grid)root.Children[1];
-            Grid resolvedSensorPane = (Grid)resolvedContentGrid.Children[0];
-            Grid resolvedPlotPane = (Grid)resolvedContentGrid.Children[1];
-            TreeView resolvedSensorTree = (TreeView)((Grid)resolvedSensorPane.Children[1]).Children[0];
-            PlotView resolvedPlotView = (PlotView)resolvedPlotPane.Children[1];
-            return (resolvedContentGrid, resolvedSensorPane, resolvedPlotPane, resolvedSensorTree, resolvedPlotView);
+            Grid pane = BuildSensorPane(out TreeView tree);
+            builtTree = tree;
+            return pane;
         });
-        _contentGrid = contentGrid;
         _sensorPane = sensorPane;
+        _sensorTree = builtTree!;
+        ContentGrid.Children.Add(sensorPane);
+
+        PlotView? builtPlot = null;
+        Grid plotPane = MeasureStartup("MainWindow.BuildPlotPane", () =>
+        {
+            Grid pane = BuildPlotPane(out PlotView pv);
+            builtPlot = pv;
+            return pane;
+        });
         _plotPane = plotPane;
-        _sensorTree = sensorTree;
-        _plotView = plotView;
+        _plotView = builtPlot!;
+        ContentGrid.Children.Add(plotPane);
+
+        TextBlock statusText = new()
+        {
+            Padding = new Thickness(8, 4, 8, 4),
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        Bind(statusText, TextBlock.TextProperty, ViewModel, nameof(ViewModel.StatusText));
+        StatusHost.Children.Add(statusText);
+
+        MeasureStartup("MainWindow.BuildLoadingOverlay", () => OverlayHost.Children.Add(BuildLoadingOverlay()));
 
         MeasureStartup("MainWindow.RestoreWindowBounds", _placementService.Restore);
         MeasureStartup("MainWindow.MaximizeWindow", _placementService.Maximize);
@@ -219,12 +237,12 @@ public sealed class MainWindow : Window
 
     private string GetRootSizeDetail()
     {
-        return FormattableString.Invariant($"root={_rootGrid.ActualWidth:F0}x{_rootGrid.ActualHeight:F0}, rows={_columnMeasurer.RowCount}, rootNodes={_sensorTree.RootNodes.Count}");
+        return FormattableString.Invariant($"root={RootGrid.ActualWidth:F0}x{RootGrid.ActualHeight:F0}, rows={_columnMeasurer.RowCount}, rootNodes={_sensorTree.RootNodes.Count}");
     }
 
     private void RootGrid_Loaded(object sender, RoutedEventArgs e)
     {
-        _rootGrid.Loaded -= RootGrid_Loaded;
+        RootGrid.Loaded -= RootGrid_Loaded;
         _startupTrace?.Mark("MainWindow.RootLoaded", GetRootSizeDetail());
         _startupTrace?.Flush();
     }
@@ -235,7 +253,7 @@ public sealed class MainWindow : Window
             return;
 
         _firstLayoutRecorded = true;
-        _rootGrid.LayoutUpdated -= RootGrid_LayoutUpdated;
+        RootGrid.LayoutUpdated -= RootGrid_LayoutUpdated;
         _startupTrace?.Mark("MainWindow.FirstLayoutUpdated", GetRootSizeDetail());
         _startupTrace?.Flush();
     }
@@ -279,55 +297,6 @@ public sealed class MainWindow : Window
         }
 
         await _startupTrace.MeasureAsync(phase, action);
-    }
-
-    private Grid BuildRoot()
-    {
-        Grid root = new()
-        {
-            Background = new SolidColorBrush(Colors.White),
-            RowDefinitions =
-            {
-                new RowDefinition { Height = GridLength.Auto },
-                new RowDefinition { Height = new GridLength(1, GridUnitType.Star) },
-                new RowDefinition { Height = GridLength.Auto }
-            }
-        };
-
-        root.Children.Add(MeasureStartup("MainWindow.BuildMenuBar", BuildMenuBar));
-
-        Grid contentGrid = new()
-        {
-            ColumnDefinitions =
-            {
-                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
-                new ColumnDefinition { Width = new GridLength(320) }
-            },
-            RowDefinitions =
-            {
-                new RowDefinition { Height = new GridLength(1, GridUnitType.Star) },
-                new RowDefinition { Height = new GridLength(220) }
-            }
-        };
-        Bind(contentGrid, UIElement.IsHitTestVisibleProperty, ViewModel, nameof(ViewModel.IsHardwareInteractionEnabled));
-        Grid.SetRow(contentGrid, 1);
-
-        contentGrid.Children.Add(MeasureStartup("MainWindow.BuildSensorPane", BuildSensorPane));
-        contentGrid.Children.Add(MeasureStartup("MainWindow.BuildPlotPane", BuildPlotPane));
-        root.Children.Add(contentGrid);
-
-        TextBlock statusText = new()
-        {
-            Padding = new Thickness(8, 4, 8, 4),
-            TextTrimming = TextTrimming.CharacterEllipsis
-        };
-        Bind(statusText, TextBlock.TextProperty, ViewModel, nameof(ViewModel.StatusText));
-        Grid.SetRow(statusText, 2);
-        root.Children.Add(statusText);
-
-        root.Children.Add(BuildLoadingOverlay());
-
-        return root;
     }
 
     private MenuBar BuildMenuBar()
@@ -480,8 +449,6 @@ public sealed class MainWindow : Window
             IsHitTestVisible = true
         };
         Bind(overlay, UIElement.VisibilityProperty, ViewModel, nameof(ViewModel.HardwareLoadingVisibility));
-        Grid.SetRowSpan(overlay, 3);
-        Canvas.SetZIndex(overlay, 1000);
 
         StackPanel content = new()
         {
@@ -508,7 +475,7 @@ public sealed class MainWindow : Window
         return overlay;
     }
 
-    private Grid BuildSensorPane()
+    private Grid BuildSensorPane(out TreeView tree)
     {
         Grid pane = new()
         {
@@ -530,7 +497,7 @@ public sealed class MainWindow : Window
 
         Grid treeHost = new();
         Grid.SetRow(treeHost, 1);
-        TreeView tree = new()
+        tree = new()
         {
             ItemTemplate = CreateTreeViewNodeContentTemplate(),
             SelectionMode = TreeViewSelectionMode.Single
@@ -542,7 +509,7 @@ public sealed class MainWindow : Window
         return pane;
     }
 
-    private Grid BuildPlotPane()
+    private Grid BuildPlotPane(out PlotView plotView)
     {
         Grid pane = new()
         {
@@ -571,9 +538,10 @@ public sealed class MainWindow : Window
         toolbar.Children.Add(reset);
         pane.Children.Add(toolbar);
 
-        PlotView plotView = new(ViewModel);
-        Grid.SetRow(plotView, 1);
-        pane.Children.Add(plotView);
+        PlotView plotViewLocal = new(ViewModel);
+        Grid.SetRow(plotViewLocal, 1);
+        pane.Children.Add(plotViewLocal);
+        plotView = plotViewLocal;
 
         return pane;
     }
@@ -1009,8 +977,8 @@ public sealed class MainWindow : Window
 
     private void UpdatePlotLayout()
     {
-        _contentGrid.ColumnDefinitions[1].Width = ViewModel.ShowPlot && ViewModel.PlotLocation == PlotLocation.Right ? new GridLength(320) : new GridLength(0);
-        _contentGrid.RowDefinitions[1].Height = ViewModel.ShowPlot && ViewModel.PlotLocation == PlotLocation.Bottom ? new GridLength(220) : new GridLength(0);
+        ContentGrid.ColumnDefinitions[1].Width = ViewModel.ShowPlot && ViewModel.PlotLocation == PlotLocation.Right ? new GridLength(320) : new GridLength(0);
+        ContentGrid.RowDefinitions[1].Height = ViewModel.ShowPlot && ViewModel.PlotLocation == PlotLocation.Bottom ? new GridLength(220) : new GridLength(0);
 
         _plotPane.Visibility = ViewModel.PlotVisibility;
         Grid.SetRow(_plotPane, ViewModel.PlotGridRow);
@@ -1025,14 +993,14 @@ public sealed class MainWindow : Window
 
     private void ApplyTheme()
     {
-        _rootGrid.RequestedTheme = ViewModel.ThemeMode switch
+        RootGrid.RequestedTheme = ViewModel.ThemeMode switch
         {
             AppThemeMode.Light => ElementTheme.Light,
             AppThemeMode.Dark or AppThemeMode.Black => ElementTheme.Dark,
             _ => ElementTheme.Default
         };
 
-        _rootGrid.Background = ViewModel.ThemeMode switch
+        RootGrid.Background = ViewModel.ThemeMode switch
         {
             AppThemeMode.Black => new SolidColorBrush(Colors.Black),
             AppThemeMode.Dark => new SolidColorBrush(global::Windows.UI.Color.FromArgb(255, 30, 30, 30)),
