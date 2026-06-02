@@ -63,8 +63,6 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     ];
 
     private const int DefaultPlotTimeWindowIndex = 2;
-    private static readonly TimeSpan MaximumPlotPointRetention = TimeSpan.FromHours(24);
-    private static readonly TimeSpan MaximumSyntheticPlotPointRetention = TimeSpan.FromMinutes(5);
 
     private static readonly TimeSpan?[] PlotTimeWindows =
     [
@@ -83,22 +81,10 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         TimeSpan.FromHours(24)
     ];
 
-    private static readonly Color[] PlotColors =
-    [
-        Color.FromArgb(255, 0x00, 0x78, 0xD4),
-        Color.FromArgb(255, 0xE8, 0x11, 0x23),
-        Color.FromArgb(255, 0x10, 0x7C, 0x10),
-        Color.FromArgb(255, 0xF7, 0x63, 0x0C),
-        Color.FromArgb(255, 0x88, 0x17, 0x98),
-        Color.FromArgb(255, 0x00, 0xB7, 0xC3),
-        Color.FromArgb(255, 0x49, 0x8B, 0x00),
-        Color.FromArgb(255, 0xA8, 0x00, 0x00)
-    ];
-
     private readonly HardwareMonitorService _hardwareMonitor;
     private readonly DispatcherQueue _dispatcherQueue;
     private readonly Logger _logger;
-    private readonly Dictionary<string, PlotSeriesViewModel> _plotSeriesByIdentifier = new();
+    private readonly PlotTrackingService _plotTracking = new();
     private readonly RemoteWebServer _remoteWebServer;
     private readonly StartupService _startupService = new();
     private readonly WinUiStartupTrace? _startupTrace;
@@ -185,7 +171,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
     public Visibility MinColumnVisibility => ShowMinColumn ? Visibility.Visible : Visibility.Collapsed;
 
-    public ObservableCollection<PlotSeriesViewModel> PlotSeries { get; } = [];
+    public ObservableCollection<PlotSeriesViewModel> PlotSeries => _plotTracking.Series;
 
     public bool IsPlotWindowVisible => ShowPlot && PlotLocation == PlotLocation.Window;
 
@@ -766,14 +752,13 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     public void ResetPlot()
     {
         _hardwareMonitor.ClearSensorValues();
-        _plotSeriesByIdentifier.Clear();
-        PlotSeries.Clear();
+        _plotTracking.Reset();
         PlotInvalidated?.Invoke(this, EventArgs.Empty);
     }
 
     public void RefreshPlotSeries()
     {
-        TrackPlotPoints();
+        _plotTracking.Track(RootItems.FirstOrDefault(), TemperatureUnit);
         PlotInvalidated?.Invoke(this, EventArgs.Empty);
     }
 
@@ -848,10 +833,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
             return;
 
         item.PenColor = color;
-        string identifier = item.Sensor.Identifier.ToString();
-        if (_plotSeriesByIdentifier.TryGetValue(identifier, out PlotSeriesViewModel? series))
-            series.Color = GetPlotColor(item);
-
+        _plotTracking.RefreshSeriesColor(item);
         PlotInvalidated?.Invoke(this, EventArgs.Empty);
     }
 
@@ -898,7 +880,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         SensorTreeItemViewModel? root = RootItems.FirstOrDefault();
         root?.RefreshValues();
         if (trackPlotPoints)
-            TrackPlotPoints();
+            _plotTracking.Track(root, TemperatureUnit);
 
         if (logSensors)
             _logger.Log();
@@ -1043,90 +1025,6 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         OnPropertyChanged();
     }
 
-    private void TrackPlotPoints()
-    {
-        SensorTreeItemViewModel? root = RootItems.FirstOrDefault();
-        if (root == null)
-            return;
-
-        DateTime now = DateTime.UtcNow;
-        HashSet<string> selectedIdentifiers = new();
-        foreach (SensorTreeItemViewModel sensorItem in root.EnumerateSensors().Where(sensorItem => sensorItem.Plot && sensorItem.Sensor != null))
-        {
-            ISensor sensor = sensorItem.Sensor!;
-            string identifier = sensor.Identifier.ToString();
-            selectedIdentifiers.Add(identifier);
-
-            if (!_plotSeriesByIdentifier.TryGetValue(identifier, out PlotSeriesViewModel? series))
-            {
-                series = new PlotSeriesViewModel(
-                    identifier,
-                    sensor.Hardware.Name,
-                    sensor.Name,
-                    sensor.SensorType,
-                    SensorFormatter.GetPlotUnit(sensor.SensorType, TemperatureUnit),
-                    GetPlotColor(sensorItem));
-                _plotSeriesByIdentifier[identifier] = series;
-                PlotSeries.Add(series);
-            }
-            else
-            {
-                series.UpdateMetadata(sensor.Hardware.Name, sensor.Name, sensor.SensorType, SensorFormatter.GetPlotUnit(sensor.SensorType, TemperatureUnit));
-
-                // Only honor an explicit user pen color for an existing series; keep the auto-assigned color stable.
-                // (Recomputing it from the live series count made existing lines shift/collide colors every tick.)
-                if (sensorItem.PenColor.HasValue)
-                    series.Color = sensorItem.PenColor.Value;
-            }
-
-            List<PlotPointViewModel> points = [];
-            foreach (SensorValue sensorValue in sensor.Values.OrderBy(value => value.Time))
-            {
-                double? displayedValue = SensorFormatter.GetPlotValue(sensor, sensorValue.Value, TemperatureUnit);
-                if (displayedValue is not { } pointValue || !double.IsFinite(pointValue))
-                    continue;
-
-                points.Add(new PlotPointViewModel(sensorValue.Time, pointValue));
-            }
-
-            DateTime? latestHistoryTimestamp = points.Count > 0 ? points[^1].Timestamp : null;
-            foreach (PlotPointViewModel existingPoint in series.Points)
-            {
-                if (now - existingPoint.Timestamp > MaximumSyntheticPlotPointRetention)
-                    continue;
-
-                if (!latestHistoryTimestamp.HasValue || existingPoint.Timestamp > latestHistoryTimestamp.Value)
-                    points.Add(existingPoint);
-            }
-
-            double? currentValue = SensorFormatter.GetPlotValue(sensor, TemperatureUnit);
-            if (currentValue is { } currentPointValue && double.IsFinite(currentPointValue))
-                points.Add(new PlotPointViewModel(now, currentPointValue));
-
-            DateTime cutoff = now - MaximumPlotPointRetention;
-            points = points
-                .Where(point => point.Timestamp >= cutoff)
-                .GroupBy(point => point.Timestamp.Ticks)
-                .Select(group => group.Last())
-                .OrderBy(point => point.Timestamp)
-                .ToList();
-
-            if (points.Count == 0 && currentValue is { } fallbackPointValue && double.IsFinite(fallbackPointValue))
-            {
-                points.Add(new PlotPointViewModel(now, fallbackPointValue));
-            }
-
-            series.ReplacePoints(points);
-        }
-
-        foreach (string identifier in _plotSeriesByIdentifier.Keys.Where(identifier => !selectedIdentifiers.Contains(identifier)).ToArray())
-        {
-            PlotSeriesViewModel series = _plotSeriesByIdentifier[identifier];
-            _plotSeriesByIdentifier.Remove(identifier);
-            PlotSeries.Remove(series);
-        }
-    }
-
     private void UpdateRoot()
     {
         MeasureStartup("MainWindowViewModel.RootItems.Clear", RootItems.Clear);
@@ -1142,11 +1040,6 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         int sensorCount = RootItems.FirstOrDefault()?.EnumerateSensors().Count() ?? 0;
         string webServerStatus = RunWebServer ? $", web server {WebServerUrl}" : "";
         StatusText = $"{hardwareCount} hardware devices, {sensorCount} sensors, update every {FormatInterval(UpdateInterval)}{webServerStatus}";
-    }
-
-    private Color GetPlotColor(SensorTreeItemViewModel sensorItem)
-    {
-        return sensorItem.PenColor ?? PlotColors[_plotSeriesByIdentifier.Count % PlotColors.Length];
     }
 
     private void RestartWebServerIfRunning()
