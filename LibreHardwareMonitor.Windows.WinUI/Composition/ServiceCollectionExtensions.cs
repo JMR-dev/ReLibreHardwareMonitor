@@ -7,6 +7,7 @@ using LibreHardwareMonitor.Windows.WinUI.Services;
 using LibreHardwareMonitor.Windows.WinUI.Services.Tracing;
 using LibreHardwareMonitor.Windows.WinUI.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.UI.Dispatching;
 
 namespace LibreHardwareMonitor.Windows.WinUI.Composition;
 
@@ -54,7 +55,8 @@ internal static class ServiceCollectionExtensions
             sp.GetRequiredService<IRemoteWebServer>(),
             sp.GetRequiredService<PlotTrackingService>(),
             sp.GetRequiredService<StartupService>(),
-            sp.GetRequiredService<IStartupTracer>()));
+            sp.GetRequiredService<IStartupTracer>(),
+            DispatcherQueue.GetForCurrentThread()));
 
         // Runtime/window-tied service factory. The window itself is constructed by App (kept out of the
         // container so the XAML-tied Window is not a container-managed singleton).

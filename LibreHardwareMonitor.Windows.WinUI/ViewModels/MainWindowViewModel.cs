@@ -83,7 +83,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     ];
 
     private readonly IHardwareMonitorService _hardwareMonitor;
-    private readonly DispatcherQueue _dispatcherQueue;
+    private readonly DispatcherQueue? _dispatcherQueue;
     private readonly ILogger _logger;
     private readonly PlotTrackingService _plotTracking;
     private readonly SensorSelectionService _sensorSelection;
@@ -125,12 +125,13 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         IRemoteWebServer remoteWebServer,
         PlotTrackingService plotTracking,
         StartupService startupService,
-        IStartupTracer startupTrace)
+        IStartupTracer startupTrace,
+        DispatcherQueue? dispatcherQueue = null)
     {
         Settings = settings;
         _startupTrace = startupTrace;
         _startupTrace.Mark("MainWindowViewModel.Constructor.Begin");
-        _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
+        _dispatcherQueue = dispatcherQueue;
         _hardwareMonitor = hardwareMonitor;
         _logger = logger;
         _sensorSelection = sensorSelection;
@@ -941,7 +942,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
     private void HardwareMonitor_TreeRebuilt(object? sender, EventArgs e)
     {
-        if (_dispatcherQueue.HasThreadAccess)
+        if (_dispatcherQueue is null || _dispatcherQueue.HasThreadAccess)
         {
             UpdateRoot();
             UpdateStatus();
