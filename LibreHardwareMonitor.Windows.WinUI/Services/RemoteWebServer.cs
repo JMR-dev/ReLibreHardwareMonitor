@@ -193,57 +193,38 @@ public sealed class RemoteWebServer : IDisposable
             }
 
             HttpListenerRequest request = context.Request;
-            if (request.HttpMethod == "POST")
-            {
-                await HandlePostRequestAsync(context.Response, request);
-                return;
-            }
+            RemoteWebRoute route = ResolveRoute(request.HttpMethod, request.Url?.AbsolutePath, request.RawUrl);
 
-            // Match on the path component only (AbsolutePath excludes the query string) and compare endpoints exactly.
-            // Prefix matching previously let any static asset whose name starts with an endpoint name (e.g.
-            // "metrics.html", "sensor-icons.css") be hijacked by the API handlers.
-            string requestedFile = (request.Url?.AbsolutePath ?? request.RawUrl ?? "").TrimStart('/');
-            if (requestedFile.Length == 0)
-                requestedFile = "index.html";
-
-            if (requestedFile.Equals("data.json", StringComparison.OrdinalIgnoreCase))
+            switch (route.Kind)
             {
-                await SendJsonAsync(context.Response, request);
-                return;
-            }
-
-            if (requestedFile.Equals("metrics", StringComparison.OrdinalIgnoreCase))
-            {
-                await SendPrometheusAsync(context.Response, request);
-                return;
-            }
-
-            if (requestedFile.Equals("Sensor", StringComparison.OrdinalIgnoreCase))
-            {
-                Dictionary<string, object?> result = [];
-                HandleSensorRequest(request, result);
-                await SendJsonSensorAsync(context.Response, result);
-                return;
-            }
-
-            if (requestedFile.Equals("ResetAllMinMax", StringComparison.OrdinalIgnoreCase))
-            {
-                _computer.Accept(new SensorVisitor(sensor =>
+                case RemoteWebRouteKind.Post:
+                    await HandlePostRequestAsync(context.Response, request);
+                    break;
+                case RemoteWebRouteKind.DataJson:
+                    await SendJsonAsync(context.Response, request);
+                    break;
+                case RemoteWebRouteKind.Metrics:
+                    await SendPrometheusAsync(context.Response, request);
+                    break;
+                case RemoteWebRouteKind.Sensor:
                 {
-                    sensor.ResetMin();
-                    sensor.ResetMax();
-                }));
-                await SendJsonAsync(context.Response, request);
-                return;
+                    Dictionary<string, object?> result = [];
+                    HandleSensorRequest(request, result);
+                    await SendJsonSensorAsync(context.Response, result);
+                    break;
+                }
+                case RemoteWebRouteKind.ResetAllMinMax:
+                    _computer.Accept(new SensorVisitor(sensor =>
+                    {
+                        sensor.ResetMin();
+                        sensor.ResetMax();
+                    }));
+                    await SendJsonAsync(context.Response, request);
+                    break;
+                case RemoteWebRouteKind.Resource:
+                    await ServeResourceFileAsync(context.Response, route.ResourcePath);
+                    break;
             }
-
-            if (requestedFile.StartsWith("images_icon/", StringComparison.OrdinalIgnoreCase))
-            {
-                await ServeResourceFileAsync(context.Response, requestedFile["images_icon/".Length..]);
-                return;
-            }
-
-            await ServeResourceFileAsync(context.Response, PathForWebResource(requestedFile));
         }
         catch
         {
@@ -258,6 +239,48 @@ public sealed class RemoteWebServer : IDisposable
         }
     }
 
+    internal enum RemoteWebRouteKind
+    {
+        Post,
+        DataJson,
+        Metrics,
+        Sensor,
+        ResetAllMinMax,
+        Resource
+    }
+
+    internal readonly record struct RemoteWebRoute(RemoteWebRouteKind Kind, string ResourcePath);
+
+    // Maps an HTTP method + path to the route that handles it. Endpoints are matched on the path component only
+    // (AbsolutePath excludes the query string) and compared exactly. Prefix matching previously let any static asset
+    // whose name starts with an endpoint name (e.g. "metrics.html", "sensor-icons.css") be hijacked by the API handlers.
+    internal static RemoteWebRoute ResolveRoute(string httpMethod, string? absolutePath, string? rawUrl)
+    {
+        if (httpMethod == "POST")
+            return new RemoteWebRoute(RemoteWebRouteKind.Post, "");
+
+        string requestedFile = (absolutePath ?? rawUrl ?? "").TrimStart('/');
+        if (requestedFile.Length == 0)
+            requestedFile = "index.html";
+
+        if (requestedFile.Equals("data.json", StringComparison.OrdinalIgnoreCase))
+            return new RemoteWebRoute(RemoteWebRouteKind.DataJson, "");
+
+        if (requestedFile.Equals("metrics", StringComparison.OrdinalIgnoreCase))
+            return new RemoteWebRoute(RemoteWebRouteKind.Metrics, "");
+
+        if (requestedFile.Equals("Sensor", StringComparison.OrdinalIgnoreCase))
+            return new RemoteWebRoute(RemoteWebRouteKind.Sensor, "");
+
+        if (requestedFile.Equals("ResetAllMinMax", StringComparison.OrdinalIgnoreCase))
+            return new RemoteWebRoute(RemoteWebRouteKind.ResetAllMinMax, "");
+
+        if (requestedFile.StartsWith("images_icon/", StringComparison.OrdinalIgnoreCase))
+            return new RemoteWebRoute(RemoteWebRouteKind.Resource, requestedFile["images_icon/".Length..]);
+
+        return new RemoteWebRoute(RemoteWebRouteKind.Resource, PathForWebResource(requestedFile));
+    }
+
     private bool IsAuthenticated(HttpListenerContext context)
     {
         if (!AuthEnabled)
@@ -266,13 +289,25 @@ public sealed class RemoteWebServer : IDisposable
         try
         {
             if (context.User?.Identity is HttpListenerBasicIdentity identity)
-                return identity.Name == UserName && ComputeSHA256(identity.Password) == PasswordSHA256;
+                return VerifyCredentials(identity.Name, identity.Password);
         }
         catch
         {
         }
 
         return false;
+    }
+
+    // Validates Basic-auth credentials. Extracted so the comparison can be unit-tested without an HttpListenerContext.
+    internal bool VerifyCredentials(string? userName, string? password)
+    {
+        if (!AuthEnabled)
+            return true;
+
+        if (userName == null || password == null)
+            return false;
+
+        return userName == UserName && ComputeSHA256(password) == PasswordSHA256;
     }
 
     private async Task HandlePostRequestAsync(HttpListenerResponse response, HttpListenerRequest request)
@@ -393,7 +428,7 @@ public sealed class RemoteWebServer : IDisposable
         response.Close();
     }
 
-    private Dictionary<string, object?> GenerateJsonForNode(SensorTreeItemViewModel node, ref int nodeIndex)
+    internal static Dictionary<string, object?> GenerateJsonForNode(SensorTreeItemViewModel node, ref int nodeIndex)
     {
         Dictionary<string, object?> jsonNode = new()
         {
@@ -432,7 +467,7 @@ public sealed class RemoteWebServer : IDisposable
 
     private async Task SendPrometheusAsync(HttpListenerResponse response, HttpListenerRequest request)
     {
-        Dictionary<string, int> settings = ParsePrometheusSettings(request);
+        Dictionary<string, int> settings = ParsePrometheusSettings(ParseQuery(request.Url?.Query));
 
         // Serialize against the sensor update loop: GeneratePrometheusResponse enumerates each sensor's live Values ring
         // buffer, which the update thread mutates concurrently (an unsynchronized enumeration would throw).
@@ -448,9 +483,8 @@ public sealed class RemoteWebServer : IDisposable
         await SendResponseAsync(response, content, "text/plain");
     }
 
-    private static Dictionary<string, int> ParsePrometheusSettings(HttpListenerRequest request)
+    internal static Dictionary<string, int> ParsePrometheusSettings(IDictionary<string, string> query)
     {
-        Dictionary<string, string> query = new(ParseQuery(request.Url?.Query), StringComparer.OrdinalIgnoreCase);
         int archive = ClampQueryValue(query, "archivelength", 0, 0, 10);
         int timestamps = ClampQueryValue(query, "timestamps", 0, 0, 1);
         int lastValue = ClampQueryValue(query, "lastvalue", 1, 0, 1);
@@ -472,7 +506,7 @@ public sealed class RemoteWebServer : IDisposable
         };
     }
 
-    private static int ClampQueryValue(IDictionary<string, string> query, string key, int fallback, int min, int max)
+    internal static int ClampQueryValue(IDictionary<string, string> query, string key, int fallback, int min, int max)
     {
         if (!query.TryGetValue(key, out string? rawValue) || !int.TryParse(rawValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
             return fallback;
@@ -480,7 +514,7 @@ public sealed class RemoteWebServer : IDisposable
         return Math.Clamp(value, min, max);
     }
 
-    private static string GeneratePrometheusResponse(SensorTreeItemViewModel? root, Dictionary<string, int> settings)
+    internal static string GeneratePrometheusResponse(SensorTreeItemViewModel? root, Dictionary<string, int> settings)
     {
         if (root == null)
             return "";
@@ -538,7 +572,7 @@ public sealed class RemoteWebServer : IDisposable
         return builder.ToString();
     }
 
-    private static (string Suffix, double Factor) GetPrometheusUnit(SensorType sensorType)
+    internal static (string Suffix, double Factor) GetPrometheusUnit(SensorType sensorType)
     {
         return sensorType switch
         {
@@ -705,7 +739,7 @@ public sealed class RemoteWebServer : IDisposable
         };
     }
 
-    private static IDictionary<string, string> ParseQuery(string? query)
+    internal static IDictionary<string, string> ParseQuery(string? query)
     {
         Dictionary<string, string> result = new(StringComparer.OrdinalIgnoreCase);
         if (string.IsNullOrWhiteSpace(query))

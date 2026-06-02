@@ -14,31 +14,7 @@ public static class SensorFormatter
 {
     public static string GetFormatString(ISensor sensor)
     {
-        return sensor.SensorType switch
-        {
-            SensorType.Voltage => "{0:F3} V",
-            SensorType.Current => "{0:F3} A",
-            SensorType.Clock => "{0:F1} MHz",
-            SensorType.Load => "{0:F1} %",
-            SensorType.Temperature => "{0:F1} \u00B0C",
-            SensorType.Fan => "{0:F0} RPM",
-            SensorType.Flow => "{0:F1} L/h",
-            SensorType.Control => "{0:F1} %",
-            SensorType.Level => "{0:F1} %",
-            SensorType.Power => "{0:F1} W",
-            SensorType.Data => "{0:F1} GB",
-            SensorType.SmallData => "{0:F1} MB",
-            SensorType.Factor => "{0:F3}",
-            SensorType.Frequency => "{0:F1} Hz",
-            SensorType.Throughput => "{0:F1} B/s",
-            SensorType.TimeSpan => "{0:g}",
-            SensorType.Timing => "{0:F3} ns",
-            SensorType.Energy => "{0:F0} mWh",
-            SensorType.Noise => "{0:F0} dBA",
-            SensorType.Conductivity => "{0:F1} \u00B5S/cm",
-            SensorType.Humidity => "{0:F0} %",
-            _ => "{0:F1}"
-        };
+        return GetFormat(sensor.SensorType).Format;
     }
 
     public static string FormatValue(ISensor sensor, float? value, TemperatureUnit temperatureUnit)
@@ -46,32 +22,19 @@ public static class SensorFormatter
         if (!value.HasValue)
             return "-";
 
-        return sensor.SensorType switch
+        // Most types just apply their format string to the value. A few are special: temperature can be converted to
+        // Fahrenheit, and throughput/time span have bespoke formatting that the format string alone can't express.
+        switch (sensor.SensorType)
         {
-            SensorType.Voltage => $"{value:F3} V",
-            SensorType.Current => $"{value:F3} A",
-            SensorType.Clock => $"{value:F1} MHz",
-            SensorType.Load => $"{value:F1} %",
-            SensorType.Temperature when temperatureUnit == TemperatureUnit.Fahrenheit => $"{CelsiusToFahrenheit(value):F1} \u00B0F",
-            SensorType.Temperature => $"{value:F1} \u00B0C",
-            SensorType.Fan => $"{value:F0} RPM",
-            SensorType.Flow => $"{value:F1} L/h",
-            SensorType.Control => $"{value:F1} %",
-            SensorType.Level => $"{value:F1} %",
-            SensorType.Power => $"{value:F1} W",
-            SensorType.Data => $"{value:F1} GB",
-            SensorType.SmallData => $"{value:F1} MB",
-            SensorType.Factor => $"{value:F3}",
-            SensorType.Frequency => $"{value:F1} Hz",
-            SensorType.Throughput => FormatThroughput(sensor, value.Value),
-            SensorType.TimeSpan => string.Format(CultureInfo.CurrentCulture, "{0:g}", TimeSpan.FromSeconds(value.Value)),
-            SensorType.Timing => $"{value:F3} ns",
-            SensorType.Energy => $"{value:F0} mWh",
-            SensorType.Noise => $"{value:F0} dBA",
-            SensorType.Conductivity => $"{value:F1} \u00B5S/cm",
-            SensorType.Humidity => $"{value:F0} %",
-            _ => value.Value.ToString("F1", CultureInfo.CurrentCulture)
-        };
+            case SensorType.Temperature when temperatureUnit == TemperatureUnit.Fahrenheit:
+                return $"{CelsiusToFahrenheit(value.Value):F1} \u00B0F";
+            case SensorType.Throughput:
+                return FormatThroughput(sensor, value.Value);
+            case SensorType.TimeSpan:
+                return string.Format(CultureInfo.CurrentCulture, "{0:g}", TimeSpan.FromSeconds(value.Value));
+            default:
+                return string.Format(CultureInfo.CurrentCulture, GetFormat(sensor.SensorType).Format, value.Value);
+        }
     }
 
     public static double? GetPlotValue(ISensor sensor, TemperatureUnit temperatureUnit)
@@ -92,32 +55,10 @@ public static class SensorFormatter
 
     public static string GetPlotUnit(SensorType sensorType, TemperatureUnit temperatureUnit)
     {
-        return sensorType switch
-        {
-            SensorType.Voltage => "V",
-            SensorType.Current => "A",
-            SensorType.Clock => "MHz",
-            SensorType.Load => "%",
-            SensorType.Temperature when temperatureUnit == TemperatureUnit.Fahrenheit => "\u00B0F",
-            SensorType.Temperature => "\u00B0C",
-            SensorType.Fan => "RPM",
-            SensorType.Flow => "L/h",
-            SensorType.Control => "%",
-            SensorType.Level => "%",
-            SensorType.Power => "W",
-            SensorType.Data => "GB",
-            SensorType.SmallData => "MB",
-            SensorType.Factor => "1",
-            SensorType.Frequency => "Hz",
-            SensorType.Throughput => "B/s",
-            SensorType.TimeSpan => "s",
-            SensorType.Timing => "ns",
-            SensorType.Energy => "mWh",
-            SensorType.Noise => "dBA",
-            SensorType.Conductivity => "\u00B5S/cm",
-            SensorType.Humidity => "%",
-            _ => ""
-        };
+        if (sensorType == SensorType.Temperature && temperatureUnit == TemperatureUnit.Fahrenheit)
+            return "\u00B0F";
+
+        return GetFormat(sensorType).PlotUnit;
     }
 
     public static string GetToolTip(ISensor sensor, TemperatureUnit temperatureUnit)
@@ -166,13 +107,41 @@ public static class SensorFormatter
         return value < oneMegabyte ? $"{value / 1024:F1} KB/s" : $"{value / oneMegabyte:F1} MB/s";
     }
 
-    private static float? CelsiusToFahrenheit(float? valueInCelsius)
-    {
-        return valueInCelsius * 1.8f + 32;
-    }
-
     private static float CelsiusToFahrenheit(float valueInCelsius)
     {
         return valueInCelsius * 1.8f + 32;
     }
+
+    // Single source of truth for each sensor type's display format and plot-axis unit. GetFormatString, FormatValue,
+    // and GetPlotUnit all derive from this so the format string and unit can never drift apart across the three.
+    private static SensorTypeFormat GetFormat(SensorType sensorType)
+    {
+        return sensorType switch
+        {
+            SensorType.Voltage => new SensorTypeFormat("{0:F3} V", "V"),
+            SensorType.Current => new SensorTypeFormat("{0:F3} A", "A"),
+            SensorType.Clock => new SensorTypeFormat("{0:F1} MHz", "MHz"),
+            SensorType.Load => new SensorTypeFormat("{0:F1} %", "%"),
+            SensorType.Temperature => new SensorTypeFormat("{0:F1} °C", "°C"),
+            SensorType.Fan => new SensorTypeFormat("{0:F0} RPM", "RPM"),
+            SensorType.Flow => new SensorTypeFormat("{0:F1} L/h", "L/h"),
+            SensorType.Control => new SensorTypeFormat("{0:F1} %", "%"),
+            SensorType.Level => new SensorTypeFormat("{0:F1} %", "%"),
+            SensorType.Power => new SensorTypeFormat("{0:F1} W", "W"),
+            SensorType.Data => new SensorTypeFormat("{0:F1} GB", "GB"),
+            SensorType.SmallData => new SensorTypeFormat("{0:F1} MB", "MB"),
+            SensorType.Factor => new SensorTypeFormat("{0:F3}", "1"),
+            SensorType.Frequency => new SensorTypeFormat("{0:F1} Hz", "Hz"),
+            SensorType.Throughput => new SensorTypeFormat("{0:F1} B/s", "B/s"),
+            SensorType.TimeSpan => new SensorTypeFormat("{0:g}", "s"),
+            SensorType.Timing => new SensorTypeFormat("{0:F3} ns", "ns"),
+            SensorType.Energy => new SensorTypeFormat("{0:F0} mWh", "mWh"),
+            SensorType.Noise => new SensorTypeFormat("{0:F0} dBA", "dBA"),
+            SensorType.Conductivity => new SensorTypeFormat("{0:F1} µS/cm", "µS/cm"),
+            SensorType.Humidity => new SensorTypeFormat("{0:F0} %", "%"),
+            _ => new SensorTypeFormat("{0:F1}", "")
+        };
+    }
+
+    private readonly record struct SensorTypeFormat(string Format, string PlotUnit);
 }

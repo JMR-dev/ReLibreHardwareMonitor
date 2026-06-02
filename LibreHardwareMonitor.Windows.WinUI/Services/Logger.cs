@@ -16,6 +16,8 @@ public sealed class Logger
     private const string FileNameFormat = "LibreHardwareMonitorLog-{0:yyyy-MM-dd}{1}.csv";
 
     private readonly IComputer _computer;
+    private readonly TimeProvider _timeProvider;
+    private readonly string _baseDirectory;
     private DateTime _day = DateTime.MinValue;
     private string _fileName = "";
     private string[]? _identifiers;
@@ -23,8 +25,16 @@ public sealed class Logger
     private ISensor?[]? _sensors;
 
     public Logger(IComputer computer)
+        : this(computer, TimeProvider.System, AppContext.BaseDirectory)
+    {
+    }
+
+    // Test seam: lets unit tests drive the clock (interval gating, daily rotation) and redirect output to a temp directory.
+    internal Logger(IComputer computer, TimeProvider timeProvider, string baseDirectory)
     {
         _computer = computer;
+        _timeProvider = timeProvider;
+        _baseDirectory = baseDirectory;
         _computer.HardwareAdded += HardwareAdded;
         _computer.HardwareRemoved += HardwareRemoved;
     }
@@ -35,7 +45,7 @@ public sealed class Logger
 
     public void Log()
     {
-        DateTime now = DateTime.Now;
+        DateTime now = _timeProvider.GetLocalNow().DateTime;
         if (_lastLoggedTime + LoggingInterval - TimeSpan.FromMilliseconds(500) > now)
             return;
 
@@ -47,7 +57,7 @@ public sealed class Logger
                     uint sessionNumber = 1;
                     do
                     {
-                        _fileName = GetFileName(DateTime.Now, sessionNumber);
+                        _fileName = GetFileName(now, sessionNumber);
                         sessionNumber++;
                     } while (File.Exists(_fileName));
 
@@ -91,9 +101,9 @@ public sealed class Logger
         _lastLoggedTime = now;
     }
 
-    private static string GetFileName(DateTime date, uint sessionNumber = 0)
+    private string GetFileName(DateTime date, uint sessionNumber = 0)
     {
-        return Path.Combine(AppContext.BaseDirectory, string.Format(FileNameFormat, date, sessionNumber == 0 ? "" : "-" + sessionNumber));
+        return Path.Combine(_baseDirectory, string.Format(FileNameFormat, date, sessionNumber == 0 ? "" : "-" + sessionNumber));
     }
 
     private void CreateNewLogFile()
