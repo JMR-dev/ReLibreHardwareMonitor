@@ -85,6 +85,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     private readonly DispatcherQueue _dispatcherQueue;
     private readonly Logger _logger;
     private readonly PlotTrackingService _plotTracking = new();
+    private readonly SensorSelectionService _sensorSelection;
     private readonly RemoteWebServer _remoteWebServer;
     private readonly StartupService _startupService = new();
     private readonly WinUiStartupTrace? _startupTrace;
@@ -125,6 +126,7 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
         _hardwareMonitor = new HardwareMonitorService(settings);
         _logger = new Logger(_hardwareMonitor.Computer);
+        _sensorSelection = new SensorSelectionService(settings);
         _remoteWebServer = new RemoteWebServer(
             () => RootItems.FirstOrDefault(),
             _hardwareMonitor.Computer,
@@ -163,9 +165,17 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
     public event EventHandler? PlotInvalidated;
 
-    public event EventHandler? GadgetSensorsChanged;
+    public event EventHandler? GadgetSensorsChanged
+    {
+        add => _sensorSelection.GadgetSensorsChanged += value;
+        remove => _sensorSelection.GadgetSensorsChanged -= value;
+    }
 
-    public event EventHandler? TraySensorsChanged;
+    public event EventHandler? TraySensorsChanged
+    {
+        add => _sensorSelection.TraySensorsChanged += value;
+        remove => _sensorSelection.TraySensorsChanged -= value;
+    }
 
     public Visibility MaxColumnVisibility => ShowMaxColumn ? Visibility.Visible : Visibility.Collapsed;
 
@@ -789,42 +799,32 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
     public bool IsSensorInGadget(SensorTreeItemViewModel item)
     {
-        return item.Sensor != null && Settings.GetValue(GetSensorSettingName(item.Sensor, "gadget"), false);
+        return _sensorSelection.IsSensorInGadget(item);
     }
 
     public bool IsSensorInTray(SensorTreeItemViewModel item)
     {
-        return item.Sensor != null && Settings.GetValue(GetSensorSettingName(item.Sensor, "tray"), false);
+        return _sensorSelection.IsSensorInTray(item);
     }
 
     public IEnumerable<SensorTreeItemViewModel> GetGadgetSensorItems()
     {
-        return RootItems.FirstOrDefault()?.EnumerateSensors().Where(IsSensorInGadget) ?? [];
+        return _sensorSelection.GetGadgetSensorItems(RootItems.FirstOrDefault());
     }
 
     public IEnumerable<SensorTreeItemViewModel> GetTraySensorItems()
     {
-        return RootItems.FirstOrDefault()?.EnumerateSensors().Where(IsSensorInTray) ?? [];
+        return _sensorSelection.GetTraySensorItems(RootItems.FirstOrDefault());
     }
 
     public void SetSensorInGadget(SensorTreeItemViewModel item, bool value)
     {
-        if (item.Sensor == null)
-            return;
-
-        SetSensorBooleanSetting(item.Sensor, "gadget", value);
-        GadgetSensorsChanged?.Invoke(this, EventArgs.Empty);
+        _sensorSelection.SetSensorInGadget(item, value);
     }
 
     public void SetSensorInTray(SensorTreeItemViewModel item, bool value)
     {
-        if (item.Sensor == null)
-            return;
-
-        SetSensorBooleanSetting(item.Sensor, "tray", value);
-        if (!value)
-            Settings.Remove(GetSensorSettingName(item.Sensor, "traycolor"));
-        TraySensorsChanged?.Invoke(this, EventArgs.Empty);
+        _sensorSelection.SetSensorInTray(item, value);
     }
 
     public void SetSensorPenColor(SensorTreeItemViewModel item, Color? color)
@@ -999,20 +999,6 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
         Settings.SetValue(settingName, value);
         OnPropertyChanged();
-    }
-
-    private void SetSensorBooleanSetting(ISensor sensor, string suffix, bool value)
-    {
-        string settingName = GetSensorSettingName(sensor, suffix);
-        if (value)
-            Settings.SetValue(settingName, true);
-        else
-            Settings.Remove(settingName);
-    }
-
-    private static string GetSensorSettingName(ISensor sensor, string suffix)
-    {
-        return new Identifier(sensor.Identifier, suffix).ToString();
     }
 
     private void SetHardwareFlag(bool value, bool currentValue, Action<bool> setValue)
