@@ -12,7 +12,7 @@ using LibreHardwareMonitor.Windows.WinUI.ViewModels;
 
 namespace LibreHardwareMonitor.Windows.WinUI.Services;
 
-public sealed class HardwareMonitorService : IDisposable
+public sealed class HardwareMonitorService : IHardwareMonitorService
 {
     private const string DeferDimmDetectionSetting = "memory.deferDimmDetection";
     private const string DeferCpuInitialUpdateSetting = "cpu.deferInitialUpdate";

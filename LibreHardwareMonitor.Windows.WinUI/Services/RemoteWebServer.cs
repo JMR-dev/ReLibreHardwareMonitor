@@ -22,7 +22,7 @@ using LibreHardwareMonitor.Windows.WinUI.ViewModels;
 
 namespace LibreHardwareMonitor.Windows.WinUI.Services;
 
-public sealed class RemoteWebServer : IDisposable
+public sealed class RemoteWebServer : IRemoteWebServer
 {
     private readonly IComputer _computer;
     private readonly object _sensorReadLock;

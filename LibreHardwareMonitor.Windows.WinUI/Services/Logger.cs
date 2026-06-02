@@ -11,7 +11,7 @@ using LibreHardwareMonitor.Hardware;
 
 namespace LibreHardwareMonitor.Windows.WinUI.Services;
 
-public sealed class Logger
+public sealed class Logger : ILogger
 {
     private const string FileNameFormat = "LibreHardwareMonitorLog-{0:yyyy-MM-dd}{1}.csv";
 
