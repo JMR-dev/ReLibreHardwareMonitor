@@ -85,7 +85,7 @@ public sealed partial class MainWindow : Window
         _columnMeasurer.SettleTriggered += (_, _) => UpdateSensorColumnWidths();
 
         MeasureStartup("MainWindow.InitializeComponent", InitializeComponent);
-        RootGrid.Background = new SolidColorBrush(Colors.White);
+        TryApplyMicaBackdrop();
         RootGrid.Loaded += RootGrid_Loaded;
         RootGrid.LayoutUpdated += RootGrid_LayoutUpdated;
         Bind(ContentGrid, UIElement.IsHitTestVisibleProperty, ViewModel, nameof(ViewModel.IsHardwareInteractionEnabled));
@@ -350,7 +350,7 @@ public sealed partial class MainWindow : Window
     {
         Grid header = _columnMeasurer.CreateHeaderGrid();
         header.Padding = new Thickness(8, 5, 8, 5);
-        header.Background = (Brush)Application.Current.Resources["SystemControlBackgroundChromeMediumLowBrush"];
+        header.Background = (Brush)Application.Current.Resources["LayerFillColorDefaultBrush"];
         header.Children.Add(CreateHeaderText("Sensor", 0, Visibility.Visible));
         header.Children.Add(CreateHeaderText("Value", 1, ViewModel.ValueColumnVisibility, nameof(ViewModel.ValueColumnVisibility)));
         header.Children.Add(CreateHeaderText("Min", 2, ViewModel.MinColumnVisibility, nameof(ViewModel.MinColumnVisibility)));
@@ -798,15 +798,41 @@ public sealed partial class MainWindow : Window
             _ => ElementTheme.Default
         };
 
-        RootGrid.Background = ViewModel.ThemeMode switch
+        if (ViewModel.ThemeMode == AppThemeMode.Black)
         {
-            AppThemeMode.Black => new SolidColorBrush(Colors.Black),
-            AppThemeMode.Dark => new SolidColorBrush(global::Windows.UI.Color.FromArgb(255, 30, 30, 30)),
-            _ => (Brush)Application.Current.Resources["ApplicationPageBackgroundThemeBrush"]
-        };
+            SystemBackdrop = null;
+            RootGrid.Background = new SolidColorBrush(Colors.Black);
+        }
+        else if (SystemBackdrop is MicaBackdrop)
+        {
+            RootGrid.Background = new SolidColorBrush(Colors.Transparent);
+        }
+        else
+        {
+            TryApplyMicaBackdrop();
+            RootGrid.Background = SystemBackdrop is MicaBackdrop
+                ? new SolidColorBrush(Colors.Transparent)
+                : (Brush)Application.Current.Resources["ApplicationPageBackgroundThemeBrush"];
+        }
 
         PlotControl.ApplyTheme(ViewModel.ThemeMode);
         _secondaryWindows.ApplyTheme(ViewModel.ThemeMode);
+    }
+
+    private void TryApplyMicaBackdrop()
+    {
+        if (SystemBackdrop is MicaBackdrop)
+            return;
+
+        try
+        {
+            if (Microsoft.UI.Composition.SystemBackdrops.MicaController.IsSupported())
+                SystemBackdrop = new MicaBackdrop { Kind = Microsoft.UI.Composition.SystemBackdrops.MicaKind.Base };
+        }
+        catch
+        {
+            // Mica unavailable (e.g. Win10) — fall back to theme brush in ApplyTheme.
+        }
     }
 
     private void UpdateSensorColumnWidths()
