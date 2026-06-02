@@ -12,7 +12,72 @@
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
-        <Grid x:Name="MenuHost" Grid.Row="0" />
+        <MenuBar x:Name="AppMenuBar"
+                 Grid.Row="0"
+                 IsEnabled="{x:Bind ViewModel.IsHardwareInteractionEnabled, Mode=OneWay}">
+            <MenuBarItem Title="File">
+                <MenuFlyoutItem Text="Save Report..." Click="OnSaveReport" />
+                <MenuFlyoutSeparator />
+                <MenuFlyoutItem Text="Reset" Click="OnResetHardware" />
+                <MenuFlyoutSubItem Text="Hardware">
+                    <ToggleMenuFlyoutItem Text="Motherboard" IsChecked="{x:Bind ViewModel.IsMotherboardEnabled, Mode=TwoWay}" />
+                    <ToggleMenuFlyoutItem Text="CPU" IsChecked="{x:Bind ViewModel.IsCpuEnabled, Mode=TwoWay}" />
+                    <ToggleMenuFlyoutItem Text="Memory" IsChecked="{x:Bind ViewModel.IsMemoryEnabled, Mode=TwoWay}" />
+                    <ToggleMenuFlyoutItem Text="GPU" IsChecked="{x:Bind ViewModel.IsGpuEnabled, Mode=TwoWay}" />
+                    <ToggleMenuFlyoutItem Text="Power Monitors" IsChecked="{x:Bind ViewModel.IsPowerMonitorEnabled, Mode=TwoWay}" />
+                    <ToggleMenuFlyoutItem Text="Fan Controllers" IsChecked="{x:Bind ViewModel.IsControllerEnabled, Mode=TwoWay}" />
+                    <ToggleMenuFlyoutItem Text="Storage Devices" IsChecked="{x:Bind ViewModel.IsStorageEnabled, Mode=TwoWay}" />
+                    <ToggleMenuFlyoutItem Text="Network" IsChecked="{x:Bind ViewModel.IsNetworkEnabled, Mode=TwoWay}" />
+                    <ToggleMenuFlyoutItem Text="Power Supplies" IsChecked="{x:Bind ViewModel.IsPsuEnabled, Mode=TwoWay}" />
+                    <ToggleMenuFlyoutItem Text="Battery" IsChecked="{x:Bind ViewModel.IsBatteryEnabled, Mode=TwoWay}" />
+                </MenuFlyoutSubItem>
+                <MenuFlyoutSeparator />
+                <MenuFlyoutItem Text="Exit" Click="OnExit" />
+            </MenuBarItem>
+            <MenuBarItem Title="View">
+                <MenuFlyoutItem Text="Reset Min/Max" Click="OnResetMinMax" />
+                <MenuFlyoutItem Text="Expand All Nodes" Click="OnExpandAll" />
+                <MenuFlyoutItem Text="Collapse All Nodes" Click="OnCollapseAll" />
+                <MenuFlyoutItem Text="Reset Plot" Click="OnResetPlot" />
+                <MenuFlyoutSeparator />
+                <ToggleMenuFlyoutItem Text="Show Hidden Sensors" IsChecked="{x:Bind ViewModel.ShowHiddenSensors, Mode=TwoWay}" />
+                <ToggleMenuFlyoutItem Text="Show Plot" IsChecked="{x:Bind ViewModel.ShowPlot, Mode=TwoWay}" />
+                <ToggleMenuFlyoutItem Text="Gadget" IsChecked="{x:Bind ViewModel.ShowGadget, Mode=TwoWay}" />
+                <MenuFlyoutSubItem Text="Columns">
+                    <ToggleMenuFlyoutItem Text="Value" IsChecked="{x:Bind ViewModel.ShowValueColumn, Mode=TwoWay}" />
+                    <ToggleMenuFlyoutItem Text="Min" IsChecked="{x:Bind ViewModel.ShowMinColumn, Mode=TwoWay}" />
+                    <ToggleMenuFlyoutItem Text="Max" IsChecked="{x:Bind ViewModel.ShowMaxColumn, Mode=TwoWay}" />
+                </MenuFlyoutSubItem>
+            </MenuBarItem>
+            <MenuBarItem Title="Options">
+                <ToggleMenuFlyoutItem Text="Start Minimized" IsChecked="{x:Bind ViewModel.StartMinimized, Mode=TwoWay}" />
+                <ToggleMenuFlyoutItem Text="Minimize To Tray" IsChecked="{x:Bind ViewModel.MinimizeToTray, Mode=TwoWay}" />
+                <ToggleMenuFlyoutItem Text="Minimize On Close" IsChecked="{x:Bind ViewModel.MinimizeOnClose, Mode=TwoWay}" />
+                <ToggleMenuFlyoutItem Text="Run On Windows Startup" IsChecked="{x:Bind ViewModel.RunOnStartup, Mode=TwoWay}" />
+                <MenuFlyoutSeparator />
+                <MenuFlyoutSubItem x:Name="TemperatureUnitMenu" Text="Temperature Unit" />
+                <MenuFlyoutSubItem x:Name="PlotLocationMenu" Text="Plot Location" />
+                <MenuFlyoutSubItem x:Name="ThemeMenu" Text="Theme" />
+                <MenuFlyoutSubItem x:Name="StrokeThicknessMenu" Text="Stroke Thickness" />
+                <MenuFlyoutSeparator />
+                <ToggleMenuFlyoutItem Text="Log Sensors" IsChecked="{x:Bind ViewModel.LogSensors, Mode=TwoWay}" />
+                <ToggleMenuFlyoutItem Text="Force Drive Wakeup" IsChecked="{x:Bind ViewModel.ForceDriveWakeup, Mode=TwoWay}" />
+                <ToggleMenuFlyoutItem Text="Throttle ATA Storage" IsChecked="{x:Bind ViewModel.ThrottleAtaUpdate, Mode=TwoWay}" />
+                <MenuFlyoutSubItem x:Name="FileRotationMenu" Text="File Rotation Method" />
+                <MenuFlyoutSubItem x:Name="UpdateIntervalMenu" Text="Update Interval" />
+                <MenuFlyoutSubItem x:Name="LoggingIntervalMenu" Text="Logging Interval" />
+                <MenuFlyoutSubItem x:Name="SensorTimeWindowMenu" Text="Sensor Values Time Window" />
+                <MenuFlyoutSeparator />
+                <MenuFlyoutSubItem Text="Remote Web Server">
+                    <ToggleMenuFlyoutItem x:Name="RunWebServerItem" Text="Run" IsChecked="{x:Bind ViewModel.RunWebServer, Mode=TwoWay}" />
+                    <MenuFlyoutItem x:Name="WebServerInterfaceItem" Text="Interface / Port" Click="OnWebServerSettings" />
+                    <MenuFlyoutItem x:Name="WebServerAuthItem" Text="Authentication" Click="OnWebServerAuthentication" />
+                </MenuFlyoutSubItem>
+            </MenuBarItem>
+            <MenuBarItem Title="Help">
+                <MenuFlyoutItem Text="About" Click="OnAbout" />
+            </MenuBarItem>
+        </MenuBar>
         <Grid x:Name="ContentGrid" Grid.Row="1">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />

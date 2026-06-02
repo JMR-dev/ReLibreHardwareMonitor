@@ -95,7 +95,7 @@ public sealed partial class MainWindow : Window
         RootGrid.LayoutUpdated += RootGrid_LayoutUpdated;
         Bind(ContentGrid, UIElement.IsHitTestVisibleProperty, ViewModel, nameof(ViewModel.IsHardwareInteractionEnabled));
 
-        MeasureStartup("MainWindow.BuildMenuBar", () => MenuHost.Children.Add(BuildMenuBar()));
+        MeasureStartup("MainWindow.PopulateMenuSubmenus", PopulateMenuSubmenus);
 
         TreeView? builtTree = null;
         Grid sensorPane = MeasureStartup("MainWindow.BuildSensorPane", () =>
@@ -288,146 +288,88 @@ public sealed partial class MainWindow : Window
         await _startupTrace.MeasureAsync(phase, action);
     }
 
-    private MenuBar BuildMenuBar()
+    private void PopulateMenuSubmenus()
     {
-        MenuBar menuBar = new();
-        Bind(menuBar, Control.IsEnabledProperty, ViewModel, nameof(ViewModel.IsHardwareInteractionEnabled));
-
-        MenuBarItem file = new() { Title = "File" };
-        file.Items.Add(CreateMenuItem("Save Report...", async (_, _) => await _dialogService.SaveReportAsync()));
-        file.Items.Add(new MenuFlyoutSeparator());
-        file.Items.Add(CreateMenuItem("Reset", (_, _) => ViewModel.ResetHardware()));
-        MenuFlyoutSubItem hardware = new() { Text = "Hardware" };
-        hardware.Items.Add(CreateToggleItem("Motherboard", nameof(ViewModel.IsMotherboardEnabled)));
-        hardware.Items.Add(CreateToggleItem("CPU", nameof(ViewModel.IsCpuEnabled)));
-        hardware.Items.Add(CreateToggleItem("Memory", nameof(ViewModel.IsMemoryEnabled)));
-        hardware.Items.Add(CreateToggleItem("GPU", nameof(ViewModel.IsGpuEnabled)));
-        hardware.Items.Add(CreateToggleItem("Power Monitors", nameof(ViewModel.IsPowerMonitorEnabled)));
-        hardware.Items.Add(CreateToggleItem("Fan Controllers", nameof(ViewModel.IsControllerEnabled)));
-        hardware.Items.Add(CreateToggleItem("Storage Devices", nameof(ViewModel.IsStorageEnabled)));
-        hardware.Items.Add(CreateToggleItem("Network", nameof(ViewModel.IsNetworkEnabled)));
-        hardware.Items.Add(CreateToggleItem("Power Supplies", nameof(ViewModel.IsPsuEnabled)));
-        hardware.Items.Add(CreateToggleItem("Battery", nameof(ViewModel.IsBatteryEnabled)));
-        file.Items.Add(hardware);
-        file.Items.Add(new MenuFlyoutSeparator());
-        file.Items.Add(CreateMenuItem("Exit", (_, _) => CloseApplication()));
-        menuBar.Items.Add(file);
-
-        MenuBarItem view = new() { Title = "View" };
-        view.Items.Add(CreateMenuItem("Reset Min/Max", (_, _) => ViewModel.ResetMinMax()));
-        view.Items.Add(CreateMenuItem("Expand All Nodes", (_, _) =>
-        {
-            ViewModel.SetAllExpanded(true);
-            RebuildSensorTree();
-        }));
-        view.Items.Add(CreateMenuItem("Collapse All Nodes", (_, _) =>
-        {
-            ViewModel.SetAllExpanded(false);
-            RebuildSensorTree();
-        }));
-        view.Items.Add(CreateMenuItem("Reset Plot", (_, _) => ResetPlot()));
-        view.Items.Add(new MenuFlyoutSeparator());
-        view.Items.Add(CreateToggleItem("Show Hidden Sensors", nameof(ViewModel.ShowHiddenSensors)));
-        view.Items.Add(CreateToggleItem("Show Plot", nameof(ViewModel.ShowPlot)));
-        view.Items.Add(CreateToggleItem("Gadget", nameof(ViewModel.ShowGadget)));
-        MenuFlyoutSubItem columns = new() { Text = "Columns" };
-        columns.Items.Add(CreateToggleItem("Value", nameof(ViewModel.ShowValueColumn)));
-        columns.Items.Add(CreateToggleItem("Min", nameof(ViewModel.ShowMinColumn)));
-        columns.Items.Add(CreateToggleItem("Max", nameof(ViewModel.ShowMaxColumn)));
-        view.Items.Add(columns);
-        menuBar.Items.Add(view);
-
-        MenuBarItem options = new() { Title = "Options" };
-        options.Items.Add(CreateToggleItem("Start Minimized", nameof(ViewModel.StartMinimized)));
-        options.Items.Add(CreateToggleItem("Minimize To Tray", nameof(ViewModel.MinimizeToTray)));
-        options.Items.Add(CreateToggleItem("Minimize On Close", nameof(ViewModel.MinimizeOnClose)));
-        options.Items.Add(CreateToggleItem("Run On Windows Startup", nameof(ViewModel.RunOnStartup)));
-        options.Items.Add(new MenuFlyoutSeparator());
-        options.Items.Add(BuildRadioSubMenu("Temperature Unit", [
+        PopulateRadioSubMenu(TemperatureUnitMenu, [
             ("Celsius", TemperatureUnit.Celsius),
             ("Fahrenheit", TemperatureUnit.Fahrenheit)
-        ], () => ViewModel.TemperatureUnit, value => ViewModel.TemperatureUnit = value));
-        options.Items.Add(BuildRadioSubMenu("Plot Location", [
+        ], () => ViewModel.TemperatureUnit, v => ViewModel.TemperatureUnit = v);
+        PopulateRadioSubMenu(PlotLocationMenu, [
             ("Window", PlotLocation.Window),
             ("Bottom", PlotLocation.Bottom),
             ("Right", PlotLocation.Right)
-        ], () => ViewModel.PlotLocation, value => ViewModel.PlotLocation = value));
-        options.Items.Add(BuildRadioSubMenu("Theme", [
+        ], () => ViewModel.PlotLocation, v => ViewModel.PlotLocation = v);
+        PopulateRadioSubMenu(ThemeMenu, [
             ("Auto", AppThemeMode.Auto),
             ("Light", AppThemeMode.Light),
             ("Dark", AppThemeMode.Dark),
             ("Black", AppThemeMode.Black)
-        ], () => ViewModel.ThemeMode, value => ViewModel.ThemeMode = value));
-        options.Items.Add(BuildIndexedSubMenu("Stroke Thickness", [
+        ], () => ViewModel.ThemeMode, v => ViewModel.ThemeMode = v);
+        PopulateRadioSubMenu(StrokeThicknessMenu, [
             ("1pt", 1),
             ("2pt", 2),
             ("3pt", 3),
             ("4pt", 4)
-        ], () => (int)ViewModel.PlotStrokeThickness, value => ViewModel.PlotStrokeThickness = value));
-        options.Items.Add(new MenuFlyoutSeparator());
-        options.Items.Add(CreateToggleItem("Log Sensors", nameof(ViewModel.LogSensors)));
-        options.Items.Add(CreateToggleItem("Force Drive Wakeup", nameof(ViewModel.ForceDriveWakeup)));
-        options.Items.Add(CreateToggleItem("Throttle ATA Storage", nameof(ViewModel.ThrottleAtaUpdate)));
-        options.Items.Add(BuildRadioSubMenu("File Rotation Method", [
+        ], () => (int)ViewModel.PlotStrokeThickness, v => ViewModel.PlotStrokeThickness = v);
+        PopulateRadioSubMenu(FileRotationMenu, [
             ("Per Session", LoggerFileRotation.PerSession),
             ("Daily", LoggerFileRotation.Daily)
-        ], () => ViewModel.FileRotationMethod, value => ViewModel.FileRotationMethod = value));
-        options.Items.Add(BuildIndexedSubMenu("Update Interval", [
-            ("250ms", 0),
-            ("500ms", 1),
-            ("1s", 2),
-            ("2s", 3),
-            ("5s", 4),
-            ("10s", 5)
-        ], () => ViewModel.UpdateIntervalIndex, value => ViewModel.UpdateIntervalIndex = value));
-        options.Items.Add(BuildIndexedSubMenu("Logging Interval", [
-            ("1s", 0),
-            ("2s", 1),
-            ("5s", 2),
-            ("10s", 3),
-            ("30s", 4),
-            ("1min", 5),
-            ("2min", 6),
-            ("5min", 7),
-            ("10min", 8),
-            ("30min", 9),
-            ("1h", 10),
-            ("2h", 11),
-            ("6h", 12)
-        ], () => ViewModel.LoggingIntervalIndex, value => ViewModel.LoggingIntervalIndex = value));
-        options.Items.Add(BuildIndexedSubMenu("Sensor Values Time Window", [
-            ("30s", 0),
-            ("1min", 1),
-            ("2min", 2),
-            ("5min", 3),
-            ("10min", 4),
-            ("30min", 5),
-            ("1h", 6),
-            ("2h", 7),
-            ("6h", 8),
-            ("12h", 9),
-            ("24h", 10)
-        ], () => ViewModel.SensorValuesTimeWindowIndex, value => ViewModel.SensorValuesTimeWindowIndex = value));
-        options.Items.Add(new MenuFlyoutSeparator());
-        MenuFlyoutSubItem webServer = new() { Text = "Remote Web Server" };
-        ToggleMenuFlyoutItem runWebServer = CreateToggleItem("Run", nameof(ViewModel.RunWebServer));
-        runWebServer.IsEnabled = !ViewModel.IsWebServerUnavailable;
-        webServer.Items.Add(runWebServer);
-        MenuFlyoutItem interfacePort = CreateMenuItem("Interface / Port", async (_, _) => await _dialogService.ShowWebServerSettingsAsync());
-        interfacePort.IsEnabled = !ViewModel.IsWebServerUnavailable;
-        webServer.Items.Add(interfacePort);
-        MenuFlyoutItem authentication = CreateMenuItem("Authentication", async (_, _) => await _dialogService.ShowWebServerAuthenticationAsync());
-        authentication.IsEnabled = !ViewModel.IsWebServerUnavailable;
-        webServer.Items.Add(authentication);
-        options.Items.Add(webServer);
-        menuBar.Items.Add(options);
+        ], () => ViewModel.FileRotationMethod, v => ViewModel.FileRotationMethod = v);
+        PopulateRadioSubMenu(UpdateIntervalMenu, [
+            ("250ms", 0), ("500ms", 1), ("1s", 2), ("2s", 3), ("5s", 4), ("10s", 5)
+        ], () => ViewModel.UpdateIntervalIndex, v => ViewModel.UpdateIntervalIndex = v);
+        PopulateRadioSubMenu(LoggingIntervalMenu, [
+            ("1s", 0), ("2s", 1), ("5s", 2), ("10s", 3), ("30s", 4), ("1min", 5),
+            ("2min", 6), ("5min", 7), ("10min", 8), ("30min", 9), ("1h", 10), ("2h", 11), ("6h", 12)
+        ], () => ViewModel.LoggingIntervalIndex, v => ViewModel.LoggingIntervalIndex = v);
+        PopulateRadioSubMenu(SensorTimeWindowMenu, [
+            ("30s", 0), ("1min", 1), ("2min", 2), ("5min", 3), ("10min", 4),
+            ("30min", 5), ("1h", 6), ("2h", 7), ("6h", 8), ("12h", 9), ("24h", 10)
+        ], () => ViewModel.SensorValuesTimeWindowIndex, v => ViewModel.SensorValuesTimeWindowIndex = v);
 
-        MenuBarItem help = new() { Title = "Help" };
-        help.Items.Add(CreateMenuItem("About", async (_, _) => await _dialogService.ShowAboutAsync()));
-        menuBar.Items.Add(help);
-
-        return menuBar;
+        RunWebServerItem.IsEnabled = !ViewModel.IsWebServerUnavailable;
+        WebServerInterfaceItem.IsEnabled = !ViewModel.IsWebServerUnavailable;
+        WebServerAuthItem.IsEnabled = !ViewModel.IsWebServerUnavailable;
     }
+
+    private static void PopulateRadioSubMenu<T>(MenuFlyoutSubItem subItem, (string Label, T Value)[] items, Func<T> getter, Action<T> setter)
+    {
+        foreach ((string label, T value) in items)
+        {
+            ToggleMenuFlyoutItem item = new()
+            {
+                Text = label,
+                IsChecked = Equals(getter(), value),
+                Tag = value
+            };
+            item.Click += (_, _) =>
+            {
+                setter(value);
+                foreach (ToggleMenuFlyoutItem sibling in subItem.Items.OfType<ToggleMenuFlyoutItem>())
+                    sibling.IsChecked = Equals(sibling.Tag, value);
+            };
+            subItem.Items.Add(item);
+        }
+    }
+
+    private async void OnSaveReport(object sender, RoutedEventArgs e) => await _dialogService.SaveReportAsync();
+    private void OnResetHardware(object sender, RoutedEventArgs e) => ViewModel.ResetHardware();
+    private void OnExit(object sender, RoutedEventArgs e) => CloseApplication();
+    private void OnResetMinMax(object sender, RoutedEventArgs e) => ViewModel.ResetMinMax();
+    private void OnExpandAll(object sender, RoutedEventArgs e)
+    {
+        ViewModel.SetAllExpanded(true);
+        RebuildSensorTree();
+    }
+    private void OnCollapseAll(object sender, RoutedEventArgs e)
+    {
+        ViewModel.SetAllExpanded(false);
+        RebuildSensorTree();
+    }
+    private void OnResetPlot(object sender, RoutedEventArgs e) => ResetPlot();
+    private async void OnWebServerSettings(object sender, RoutedEventArgs e) => await _dialogService.ShowWebServerSettingsAsync();
+    private async void OnWebServerAuthentication(object sender, RoutedEventArgs e) => await _dialogService.ShowWebServerAuthenticationAsync();
+    private async void OnAbout(object sender, RoutedEventArgs e) => await _dialogService.ShowAboutAsync();
 
     private Grid BuildSensorPane(out TreeView tree)
     {
@@ -993,56 +935,10 @@ public sealed partial class MainWindow : Window
         return textBlock;
     }
 
-    private static MenuFlyoutSubItem BuildIndexedSubMenu(string text, (string Label, int Value)[] items, Func<int> getter, Action<int> setter)
-    {
-        return BuildRadioSubMenu(text, items, getter, setter);
-    }
-
-    private static MenuFlyoutSubItem BuildRadioSubMenu<T>(string text, (string Label, T Value)[] items, Func<T> getter, Action<T> setter)
-    {
-        MenuFlyoutSubItem subItem = new() { Text = text };
-        foreach ((string label, T value) in items)
-        {
-            ToggleMenuFlyoutItem item = new()
-            {
-                Text = label,
-                IsChecked = Equals(getter(), value)
-            };
-            item.Click += (_, _) =>
-            {
-                setter(value);
-                foreach (ToggleMenuFlyoutItem sibling in subItem.Items.OfType<ToggleMenuFlyoutItem>())
-                    sibling.IsChecked = Equals(sibling.Tag, value);
-            };
-            item.Tag = value;
-            subItem.Items.Add(item);
-        }
-
-        return subItem;
-    }
-
     private static MenuFlyoutItem CreateMenuItem(string text, RoutedEventHandler handler)
     {
         MenuFlyoutItem item = new() { Text = text };
         item.Click += handler;
-        return item;
-    }
-
-    private ToggleMenuFlyoutItem CreateToggleItem(string text, string bindingPath)
-    {
-        ToggleMenuFlyoutItem item = new() { Text = text };
-        Bind(item, ToggleMenuFlyoutItem.IsCheckedProperty, ViewModel, bindingPath, BindingMode.TwoWay);
-        return item;
-    }
-
-    private static ToggleMenuFlyoutItem CreateToggleSettingItem(string text, Func<bool> getter, Action<bool> setter)
-    {
-        ToggleMenuFlyoutItem item = new()
-        {
-            Text = text,
-            IsChecked = getter()
-        };
-        item.Click += (_, _) => setter(item.IsChecked);
         return item;
     }
 
