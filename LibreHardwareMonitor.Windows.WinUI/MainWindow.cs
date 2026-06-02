@@ -8,8 +8,6 @@ using System.Collections.Specialized;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Net;
-using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
@@ -29,8 +27,6 @@ using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using Windows.Graphics;
-using Windows.Storage;
-using Windows.Storage.Pickers;
 using WinRT.Interop;
 using IOPath = System.IO.Path;
 
@@ -82,6 +78,7 @@ public sealed class MainWindow : Window
     private readonly Grid _sensorPane;
     private readonly WinUiStartupTrace? _startupTrace;
     private readonly TrayIconService _trayIconService;
+    private readonly DialogService _dialogService;
     private readonly Dictionary<(string Text, bool Bold), double> _textMeasurementCache = new();
     private TextBlock? _measurementTextBlock;
     private readonly List<Grid> _sensorRowGrids = [];
@@ -131,6 +128,7 @@ public sealed class MainWindow : Window
             settings,
             () => ViewModel.TemperatureUnit));
         _trayIconService.IsMainIconEnabled = ViewModel.MinimizeToTray;
+        _dialogService = new DialogService(() => Content.XamlRoot, ViewModel, WindowNative.GetWindowHandle(this));
 
         Grid root = MeasureStartup("MainWindow.BuildRoot", BuildRoot);
         MeasureStartup("MainWindow.AssignContent", () => Content = root);
@@ -382,7 +380,7 @@ public sealed class MainWindow : Window
         Bind(menuBar, Control.IsEnabledProperty, ViewModel, nameof(ViewModel.IsHardwareInteractionEnabled));
 
         MenuBarItem file = new() { Title = "File" };
-        file.Items.Add(CreateMenuItem("Save Report...", async (_, _) => await SaveReportAsync()));
+        file.Items.Add(CreateMenuItem("Save Report...", async (_, _) => await _dialogService.SaveReportAsync()));
         file.Items.Add(new MenuFlyoutSeparator());
         file.Items.Add(CreateMenuItem("Reset", (_, _) => ViewModel.ResetHardware()));
         MenuFlyoutSubItem hardware = new() { Text = "Hardware" };
@@ -501,17 +499,17 @@ public sealed class MainWindow : Window
         ToggleMenuFlyoutItem runWebServer = CreateToggleItem("Run", nameof(ViewModel.RunWebServer));
         runWebServer.IsEnabled = !ViewModel.IsWebServerUnavailable;
         webServer.Items.Add(runWebServer);
-        MenuFlyoutItem interfacePort = CreateMenuItem("Interface / Port", async (_, _) => await ShowWebServerSettingsAsync());
+        MenuFlyoutItem interfacePort = CreateMenuItem("Interface / Port", async (_, _) => await _dialogService.ShowWebServerSettingsAsync());
         interfacePort.IsEnabled = !ViewModel.IsWebServerUnavailable;
         webServer.Items.Add(interfacePort);
-        MenuFlyoutItem authentication = CreateMenuItem("Authentication", async (_, _) => await ShowWebServerAuthenticationAsync());
+        MenuFlyoutItem authentication = CreateMenuItem("Authentication", async (_, _) => await _dialogService.ShowWebServerAuthenticationAsync());
         authentication.IsEnabled = !ViewModel.IsWebServerUnavailable;
         webServer.Items.Add(authentication);
         options.Items.Add(webServer);
         menuBar.Items.Add(options);
 
         MenuBarItem help = new() { Title = "Help" };
-        help.Items.Add(CreateMenuItem("About", async (_, _) => await ShowAboutAsync()));
+        help.Items.Add(CreateMenuItem("About", async (_, _) => await _dialogService.ShowAboutAsync()));
         menuBar.Items.Add(help);
 
         return menuBar;
@@ -1024,7 +1022,7 @@ public sealed class MainWindow : Window
         row.DoubleTapped += async (_, _) =>
         {
             if (item.Sensor?.Parameters.Count > 0)
-                await ShowParametersAsync(item);
+                await _dialogService.ShowParametersAsync(item);
         };
         return row;
     }
@@ -1033,9 +1031,9 @@ public sealed class MainWindow : Window
     {
         MenuFlyout flyout = new();
         if (item.Sensor?.Parameters.Count > 0)
-            flyout.Items.Add(CreateMenuItem("Parameters...", async (_, _) => await ShowParametersAsync(item)));
+            flyout.Items.Add(CreateMenuItem("Parameters...", async (_, _) => await _dialogService.ShowParametersAsync(item)));
 
-        MenuFlyoutItem rename = CreateMenuItem("Rename", async (_, _) => await RenameNodeAsync(item));
+        MenuFlyoutItem rename = CreateMenuItem("Rename", async (_, _) => await _dialogService.RenameAsync(item));
         rename.IsEnabled = item.CanRename;
         flyout.Items.Add(rename);
 
@@ -1081,7 +1079,7 @@ public sealed class MainWindow : Window
         hide.IsEnabled = item.CanHide;
         flyout.Items.Add(hide);
         flyout.Items.Add(new MenuFlyoutSeparator());
-        MenuFlyoutItem penColor = CreateMenuItem("Pen Color...", async (_, _) => await ShowPenColorAsync(item));
+        MenuFlyoutItem penColor = CreateMenuItem("Pen Color...", async (_, _) => await _dialogService.ShowPenColorAsync(item));
         penColor.IsEnabled = item.Sensor != null;
         flyout.Items.Add(penColor);
         MenuFlyoutItem resetPenColor = CreateMenuItem("Reset Pen Color", (_, _) => ViewModel.SetSensorPenColor(item, null));
@@ -1215,264 +1213,6 @@ public sealed class MainWindow : Window
         return controlItem;
     }
 
-    private async Task RenameNodeAsync(SensorTreeItemViewModel item)
-    {
-        if (!item.CanRename)
-            return;
-
-        TextBox nameTextBox = new() { Text = item.Text, SelectionStart = 0, SelectionLength = item.Text.Length };
-        ContentDialog dialog = new()
-        {
-            XamlRoot = Content.XamlRoot,
-            Title = "Rename Sensor",
-            Content = nameTextBox,
-            PrimaryButtonText = "Save",
-            CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Primary
-        };
-
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
-            item.Text = nameTextBox.Text.Trim();
-    }
-
-    private async Task ShowPenColorAsync(SensorTreeItemViewModel item)
-    {
-        if (item.Sensor == null)
-            return;
-
-        ColorPicker picker = new()
-        {
-            Color = item.PenColor ?? global::Windows.UI.Color.FromArgb(255, 0, 120, 212),
-            IsAlphaEnabled = false,
-            IsColorSliderVisible = true,
-            IsColorChannelTextInputVisible = true,
-            IsHexInputVisible = true
-        };
-
-        ContentDialog dialog = new()
-        {
-            XamlRoot = Content.XamlRoot,
-            Title = "Pen Color",
-            Content = picker,
-            PrimaryButtonText = "Save",
-            CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Primary
-        };
-
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
-            ViewModel.SetSensorPenColor(item, picker.Color);
-    }
-
-    private async Task ShowParametersAsync(SensorTreeItemViewModel item)
-    {
-        if (item.Sensor == null || item.Sensor.Parameters.Count == 0)
-            return;
-
-        StackPanel panel = new() { Spacing = 10 };
-        TextBlock caption = new()
-        {
-            Text = item.Sensor.Name,
-            FontWeight = new global::Windows.UI.Text.FontWeight { Weight = 600 },
-            TextWrapping = TextWrapping.Wrap
-        };
-        panel.Children.Add(caption);
-
-        ParameterEditorRow[] rows = item.Sensor.Parameters.Select(CreateParameterEditorRow).ToArray();
-        foreach (ParameterEditorRow row in rows)
-            panel.Children.Add(row.Container);
-
-        ContentDialog dialog = new()
-        {
-            XamlRoot = Content.XamlRoot,
-            Title = "Parameters",
-            Content = new ScrollViewer { Content = panel, MaxHeight = 520 },
-            PrimaryButtonText = "OK",
-            CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Primary
-        };
-        dialog.PrimaryButtonClick += (sender, args) =>
-        {
-            foreach (ParameterEditorRow row in rows)
-            {
-                if (row.UseDefault.IsChecked == true)
-                    continue;
-
-                if (!float.TryParse(row.Value.Text, NumberStyles.Float, CultureInfo.CurrentCulture, out float _)
-                    && !float.TryParse(row.Value.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out float _))
-                {
-                    row.Value.Header = "Invalid value";
-                    args.Cancel = true;
-                    return;
-                }
-            }
-
-            foreach (ParameterEditorRow row in rows)
-            {
-                if (row.UseDefault.IsChecked == true)
-                    row.Parameter.IsDefault = true;
-                else if (float.TryParse(row.Value.Text, NumberStyles.Float, CultureInfo.CurrentCulture, out float currentCultureValue)
-                         || float.TryParse(row.Value.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out currentCultureValue))
-                    row.Parameter.Value = currentCultureValue;
-            }
-        };
-
-        await dialog.ShowAsync();
-    }
-
-    private static ParameterEditorRow CreateParameterEditorRow(IParameter parameter)
-    {
-        Grid grid = new()
-        {
-            ColumnDefinitions =
-            {
-                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
-                new ColumnDefinition { Width = GridLength.Auto },
-                new ColumnDefinition { Width = new GridLength(120) }
-            },
-            RowDefinitions =
-            {
-                new RowDefinition { Height = GridLength.Auto },
-                new RowDefinition { Height = GridLength.Auto }
-            },
-            ColumnSpacing = 8
-        };
-
-        TextBlock name = new()
-        {
-            Text = parameter.Name,
-            VerticalAlignment = VerticalAlignment.Center,
-            TextWrapping = TextWrapping.Wrap
-        };
-        grid.Children.Add(name);
-
-        CheckBox useDefault = new()
-        {
-            Content = "Default",
-            IsChecked = parameter.IsDefault,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        Grid.SetColumn(useDefault, 1);
-        grid.Children.Add(useDefault);
-
-        TextBox value = new()
-        {
-            Text = parameter.Value.ToString(CultureInfo.CurrentCulture),
-            IsEnabled = !parameter.IsDefault
-        };
-        Grid.SetColumn(value, 2);
-        grid.Children.Add(value);
-
-        TextBlock description = new()
-        {
-            Text = parameter.Description,
-            Opacity = 0.72,
-            TextWrapping = TextWrapping.Wrap
-        };
-        Grid.SetRow(description, 1);
-        Grid.SetColumnSpan(description, 3);
-        grid.Children.Add(description);
-
-        useDefault.Checked += (_, _) => value.IsEnabled = false;
-        useDefault.Unchecked += (_, _) => value.IsEnabled = true;
-
-        return new ParameterEditorRow(parameter, grid, useDefault, value);
-    }
-
-    private async Task ShowWebServerSettingsAsync()
-    {
-        ComboBox interfaces = new() { MinWidth = 260 };
-        foreach (string address in GetLocalIPv4Addresses())
-            interfaces.Items.Add(address);
-        interfaces.Items.Add("0.0.0.0");
-        interfaces.SelectedItem = interfaces.Items.Contains(ViewModel.ListenerIp) ? ViewModel.ListenerIp : "0.0.0.0";
-
-        TextBox port = new()
-        {
-            Header = "Port",
-            Text = ViewModel.ListenerPort.ToString(CultureInfo.InvariantCulture),
-            InputScope = new InputScope { Names = { new InputScopeName(InputScopeNameValue.Number) } }
-        };
-
-        HyperlinkButton link = new()
-        {
-            Content = ViewModel.WebServerUrl,
-            NavigateUri = new Uri(ViewModel.WebServerUrl)
-        };
-
-        StackPanel content = new() { Spacing = 12 };
-        content.Children.Add(new TextBlock { Text = "Interface", FontWeight = new global::Windows.UI.Text.FontWeight { Weight = 600 } });
-        content.Children.Add(interfaces);
-        content.Children.Add(port);
-        content.Children.Add(link);
-
-        ContentDialog dialog = new()
-        {
-            XamlRoot = Content.XamlRoot,
-            Title = "Remote Web Server",
-            Content = content,
-            PrimaryButtonText = "Save",
-            CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Primary
-        };
-
-        dialog.PrimaryButtonClick += (_, args) =>
-        {
-            if (!int.TryParse(port.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedPort) || parsedPort < 1 || parsedPort > 65535)
-            {
-                port.Header = "Port must be 1-65535";
-                args.Cancel = true;
-                return;
-            }
-
-            ViewModel.ListenerIp = interfaces.SelectedItem as string ?? "0.0.0.0";
-            ViewModel.ListenerPort = parsedPort;
-        };
-
-        await dialog.ShowAsync();
-    }
-
-    private async Task ShowWebServerAuthenticationAsync()
-    {
-        CheckBox enabled = new() { Content = "Enable HTTP authentication", IsChecked = ViewModel.AuthWebServer };
-        TextBox userName = new()
-        {
-            Header = "Username",
-            Text = ViewModel.AuthWebServerUserName,
-            IsEnabled = enabled.IsChecked == true
-        };
-        PasswordBox password = new()
-        {
-            Header = "New password",
-            IsEnabled = enabled.IsChecked == true
-        };
-
-        enabled.Checked += (_, _) => userName.IsEnabled = password.IsEnabled = true;
-        enabled.Unchecked += (_, _) => userName.IsEnabled = password.IsEnabled = false;
-
-        StackPanel content = new() { Spacing = 12 };
-        content.Children.Add(enabled);
-        content.Children.Add(userName);
-        content.Children.Add(password);
-
-        ContentDialog dialog = new()
-        {
-            XamlRoot = Content.XamlRoot,
-            Title = "Remote Web Server Authentication",
-            Content = content,
-            PrimaryButtonText = "Save",
-            CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Primary
-        };
-        dialog.PrimaryButtonClick += (_, _) =>
-        {
-            ViewModel.AuthWebServer = enabled.IsChecked == true;
-            ViewModel.AuthWebServerUserName = userName.Text;
-            ViewModel.SetAuthPassword(password.Password);
-        };
-
-        await dialog.ShowAsync();
-    }
-
     private void SensorTree_SelectionChanged(TreeView sender, TreeViewSelectionChangedEventArgs args)
     {
         if (args.AddedItems.Count == 0)
@@ -1484,65 +1224,6 @@ public sealed class MainWindow : Window
         object selected = args.AddedItems[0];
         if (selected is TreeViewNode node && node.Content is FrameworkElement element)
             ViewModel.SelectedItem = element.DataContext as SensorTreeItemViewModel;
-    }
-
-    private async Task SaveReportAsync()
-    {
-        FileSavePicker picker = new()
-        {
-            SuggestedFileName = "LibreHardwareMonitor.Report",
-            SuggestedStartLocation = PickerLocationId.DocumentsLibrary
-        };
-        picker.FileTypeChoices.Add("Text", [".txt"]);
-        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
-
-        StorageFile? file = await picker.PickSaveFileAsync();
-        if (file == null)
-            return;
-
-        CachedFileManager.DeferUpdates(file);
-        await FileIO.WriteTextAsync(file, ViewModel.GetReport());
-        await CachedFileManager.CompleteUpdatesAsync(file);
-    }
-
-    private async Task ShowAboutAsync()
-    {
-        StackPanel content = new() { Spacing = 8 };
-        content.Children.Add(new TextBlock
-        {
-            Text = "Libre Hardware Monitor",
-            FontWeight = new global::Windows.UI.Text.FontWeight { Weight = 600 },
-            FontSize = 18
-        });
-        content.Children.Add(new TextBlock
-        {
-            Text = $"Version {typeof(MainWindow).Assembly.GetName().Version}",
-            TextWrapping = TextWrapping.Wrap
-        });
-        content.Children.Add(new TextBlock
-        {
-            Text = "A free, open source hardware monitoring application.",
-            TextWrapping = TextWrapping.Wrap
-        });
-        content.Children.Add(new HyperlinkButton
-        {
-            Content = "Project website",
-            NavigateUri = new Uri("https://github.com/LibreHardwareMonitor/LibreHardwareMonitor")
-        });
-        content.Children.Add(new HyperlinkButton
-        {
-            Content = "Mozilla Public License 2.0",
-            NavigateUri = new Uri("https://www.mozilla.org/MPL/2.0/")
-        });
-
-        ContentDialog dialog = new()
-        {
-            XamlRoot = Content.XamlRoot,
-            Title = "Libre Hardware Monitor",
-            Content = content,
-            CloseButtonText = "OK"
-        };
-        await dialog.ShowAsync();
     }
 
     private void ResetPlot()
@@ -2286,23 +1967,6 @@ public sealed class MainWindow : Window
         return item;
     }
 
-    private static string[] GetLocalIPv4Addresses()
-    {
-        try
-        {
-            return Dns.GetHostEntry(Dns.GetHostName())
-                .AddressList
-                .Where(address => address.AddressFamily == AddressFamily.InterNetwork)
-                .Select(address => address.ToString())
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-        }
-        catch
-        {
-            return [];
-        }
-    }
-
     private const int ShowWindowHide = 0;
     private const int ShowWindowShow = 5;
     private const int ShowWindowMinimize = 6;
@@ -2336,8 +2000,6 @@ public sealed class MainWindow : Window
     }
 
     private sealed record PlotSeriesSample(PlotSeriesViewModel Series, IReadOnlyList<PlotPointViewModel> Points);
-
-    private sealed record ParameterEditorRow(IParameter Parameter, Grid Container, CheckBox UseDefault, TextBox Value);
 
     private static void Bind(DependencyObject target, DependencyProperty property, object source, string path, BindingMode mode = BindingMode.OneWay)
     {
