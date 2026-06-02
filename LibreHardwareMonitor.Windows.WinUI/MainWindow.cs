@@ -11,21 +11,19 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
+using LibreHardwareMonitor.Windows.WinUI.Controls;
 using LibreHardwareMonitor.Windows.WinUI.Services;
 using LibreHardwareMonitor.Windows.WinUI.Utilities;
 using LibreHardwareMonitor.Windows.WinUI.ViewModels;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
-using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Data;
-using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Shapes;
 using Windows.Graphics;
 using WinRT.Interop;
 using IOPath = System.IO.Path;
@@ -35,22 +33,6 @@ namespace LibreHardwareMonitor.Windows.WinUI;
 public sealed class MainWindow : Window
 {
     private static readonly TimeSpan DeviceColumnWidthSettleDelay = TimeSpan.FromSeconds(5);
-    private static readonly (string Label, int Value)[] PlotTimeWindowOptions =
-    [
-        ("Auto", 0),
-        ("5 min", 1),
-        ("10 min", 2),
-        ("20 min", 3),
-        ("30 min", 4),
-        ("45 min", 5),
-        ("1 h", 6),
-        ("1.5 h", 7),
-        ("2 h", 8),
-        ("3 h", 9),
-        ("6 h", 10),
-        ("12 h", 11),
-        ("24 h", 12)
-    ];
 
     private const double DefaultSensorColumnWidth = 320;
     private const double MaximumSensorColumnWidth = 4096;
@@ -58,12 +40,6 @@ public sealed class MainWindow : Window
     private const double SensorColumnPadding = 72;
     private const double SensorTreeIndentWidth = 20;
     private const string DeviceColumnWidthSetting = "winui.deviceColumnWidth";
-    private const double PlotAxisLabelFontSize = 11;
-    private const double PlotBottomMargin = 28;
-    private const double PlotLeftMargin = 86;
-    private const double PlotPointMarkerRadius = 3;
-    private const double PlotRightMargin = 12;
-    private const double PlotTopMargin = 10;
     private const double ValueColumnPadding = 18;
     private const int MaxTextMeasurementCacheEntries = 4096;
 
@@ -71,7 +47,7 @@ public sealed class MainWindow : Window
     private readonly Grid _contentGrid;
     private readonly DispatcherQueueTimer _deviceColumnWidthSettleTimer;
     private readonly DispatcherQueueTimer _timer;
-    private readonly Canvas _plotCanvas;
+    private readonly PlotView _plotView;
     private readonly Grid _plotPane;
     private readonly Grid _rootGrid;
     private readonly TreeView _sensorTree;
@@ -100,7 +76,6 @@ public sealed class MainWindow : Window
     private bool _startupCompleteRecorded;
     private bool _sensorTreeRebuildQueued;
     private bool _sensorColumnWidthUpdateQueued;
-    private double _plotValueZoomFactor = 1;
 
     public MainWindow() : this(null)
     {
@@ -136,20 +111,20 @@ public sealed class MainWindow : Window
         _rootGrid.Loaded += RootGrid_Loaded;
         _rootGrid.LayoutUpdated += RootGrid_LayoutUpdated;
 
-        (Grid contentGrid, Grid sensorPane, Grid plotPane, TreeView sensorTree, Canvas plotCanvas) = MeasureStartup("MainWindow.ResolveControls", () =>
+        (Grid contentGrid, Grid sensorPane, Grid plotPane, TreeView sensorTree, PlotView plotView) = MeasureStartup("MainWindow.ResolveControls", () =>
         {
             Grid resolvedContentGrid = (Grid)root.Children[1];
             Grid resolvedSensorPane = (Grid)resolvedContentGrid.Children[0];
             Grid resolvedPlotPane = (Grid)resolvedContentGrid.Children[1];
             TreeView resolvedSensorTree = (TreeView)((Grid)resolvedSensorPane.Children[1]).Children[0];
-            Canvas resolvedPlotCanvas = (Canvas)resolvedPlotPane.Children[1];
-            return (resolvedContentGrid, resolvedSensorPane, resolvedPlotPane, resolvedSensorTree, resolvedPlotCanvas);
+            PlotView resolvedPlotView = (PlotView)resolvedPlotPane.Children[1];
+            return (resolvedContentGrid, resolvedSensorPane, resolvedPlotPane, resolvedSensorTree, resolvedPlotView);
         });
         _contentGrid = contentGrid;
         _sensorPane = sensorPane;
         _plotPane = plotPane;
         _sensorTree = sensorTree;
-        _plotCanvas = plotCanvas;
+        _plotView = plotView;
 
         MeasureStartup("MainWindow.RestoreWindowBounds", RestoreWindowBounds);
         MeasureStartup("MainWindow.MaximizeWindow", MaximizeWindow);
@@ -616,16 +591,9 @@ public sealed class MainWindow : Window
         toolbar.Children.Add(reset);
         pane.Children.Add(toolbar);
 
-        Canvas canvas = new()
-        {
-            MinHeight = 160,
-            Background = (Brush)Application.Current.Resources["SystemControlBackgroundAltHighBrush"]
-        };
-        canvas.ContextFlyout = BuildPlotContextMenu();
-        canvas.SizeChanged += (_, _) => DrawPlot();
-        canvas.PointerWheelChanged += PlotCanvas_PointerWheelChanged;
-        Grid.SetRow(canvas, 1);
-        pane.Children.Add(canvas);
+        PlotView plotView = new(ViewModel);
+        Grid.SetRow(plotView, 1);
+        pane.Children.Add(plotView);
 
         return pane;
     }
@@ -871,11 +839,8 @@ public sealed class MainWindow : Window
         {
             if (_plotWindow == null)
             {
-                _plotWindow = new PlotWindow(ViewModel.Settings);
+                _plotWindow = new PlotWindow(ViewModel.Settings, ViewModel);
                 _plotWindow.ApplyTheme(ViewModel.ThemeMode);
-                _plotWindow.PlotCanvas.ContextFlyout = BuildPlotContextMenu();
-                _plotWindow.PlotCanvas.PointerWheelChanged += PlotCanvas_PointerWheelChanged;
-                _plotWindow.PlotSizeChanged += (_, _) => DrawPlot();
                 _plotWindow.UserClosed += (_, _) =>
                 {
                     _plotWindow = null;
@@ -1097,89 +1062,6 @@ public sealed class MainWindow : Window
         return flyout;
     }
 
-    private MenuFlyout BuildPlotContextMenu()
-    {
-        MenuFlyout flyout = new();
-        flyout.Items.Add(CreateToggleSettingItem("Stacked Axes", () => ViewModel.PlotStackedAxes, value => ViewModel.PlotStackedAxes = value));
-        flyout.Items.Add(CreateToggleSettingItem("Show Axes Labels", () => ViewModel.ShowPlotAxisLabels, value => ViewModel.ShowPlotAxisLabels = value));
-
-        MenuFlyoutSubItem timeAxis = new() { Text = "Time Axis" };
-        timeAxis.Items.Add(CreateToggleSettingItem("Enable Zoom", () => ViewModel.PlotTimeAxisZoomEnabled, value => ViewModel.PlotTimeAxisZoomEnabled = value));
-        timeAxis.Items.Add(new MenuFlyoutSeparator());
-        foreach ((string label, int value) in PlotTimeWindowOptions)
-        {
-            ToggleMenuFlyoutItem item = new()
-            {
-                Text = label,
-                IsChecked = ViewModel.PlotTimeWindowIndex == value,
-                Tag = value
-            };
-            item.Click += (_, _) =>
-            {
-                ViewModel.PlotTimeWindowIndex = value;
-                foreach (ToggleMenuFlyoutItem sibling in timeAxis.Items.OfType<ToggleMenuFlyoutItem>())
-                    sibling.IsChecked = Equals(sibling.Tag, value);
-            };
-            timeAxis.Items.Add(item);
-        }
-
-        flyout.Items.Add(timeAxis);
-
-        MenuFlyoutSubItem valueAxes = new() { Text = "Value Axes" };
-        valueAxes.Items.Add(CreateToggleSettingItem("Enable Zoom", () => ViewModel.PlotValueAxesZoomEnabled, value => ViewModel.PlotValueAxesZoomEnabled = value));
-        valueAxes.Items.Add(CreateMenuItem("Autoscale All", (_, _) =>
-        {
-            _plotValueZoomFactor = 1;
-            DrawPlot();
-        }));
-        flyout.Items.Add(valueAxes);
-
-        return flyout;
-    }
-
-    private void PlotCanvas_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
-    {
-        if (sender is not Canvas canvas)
-            return;
-
-        PointerPoint pointerPoint = e.GetCurrentPoint(canvas);
-        int wheelDelta = pointerPoint.Properties.MouseWheelDelta;
-        if (wheelDelta == 0)
-            return;
-
-        PlotBounds bounds = GetPlotBounds(GetPlotCanvasWidth(canvas), GetPlotCanvasHeight(canvas));
-        if (ViewModel.PlotValueAxesZoomEnabled && ShouldDrawPlotAxisLabels(bounds) && pointerPoint.Position.X <= bounds.Left)
-        {
-            ZoomPlotValueAxes(wheelDelta);
-            e.Handled = true;
-            return;
-        }
-
-        if (ViewModel.PlotTimeAxisZoomEnabled)
-        {
-            ZoomPlotTimeAxis(wheelDelta);
-            e.Handled = true;
-        }
-    }
-
-    private void ZoomPlotValueAxes(int wheelDelta)
-    {
-        _plotValueZoomFactor = Math.Clamp(_plotValueZoomFactor * (wheelDelta > 0 ? 0.8 : 1.25), 0.05, 20);
-        DrawPlot();
-    }
-
-    private void ZoomPlotTimeAxis(int wheelDelta)
-    {
-        int lastIndex = PlotTimeWindowOptions[^1].Value;
-        int index = ViewModel.PlotTimeWindowIndex;
-        if (wheelDelta > 0)
-            index = index == 0 ? lastIndex : Math.Max(1, index - 1);
-        else
-            index = index >= lastIndex ? 0 : index + 1;
-
-        ViewModel.PlotTimeWindowIndex = index;
-    }
-
     private void QueuePlotSeriesRefresh()
     {
         if (!DispatcherQueue.TryEnqueue(ViewModel.RefreshPlotSeries))
@@ -1229,469 +1111,18 @@ public sealed class MainWindow : Window
     private void ResetPlot()
     {
         ViewModel.ResetPlot();
-        DrawPlot();
+        _plotView.ResetZoom();
+        _plotWindow?.RedrawPlot();
     }
 
     private void DrawPlot()
     {
         if (ViewModel.PlotLocation == PlotLocation.Window)
-            _plotCanvas.Children.Clear();
+            _plotView.Clear();
         else
-            DrawPlot(_plotCanvas);
+            _plotView.Redraw();
 
-        if (_plotWindow != null)
-            DrawPlot(_plotWindow.PlotCanvas);
-    }
-
-    private void DrawPlot(Canvas canvas)
-    {
-        canvas.Children.Clear();
-        canvas.Background = new SolidColorBrush(GetPlotBackgroundColor());
-        if (!ViewModel.ShowPlot)
-            return;
-
-        double width = GetPlotCanvasWidth(canvas);
-        double height = GetPlotCanvasHeight(canvas);
-        if (width <= 4 || height <= 4)
-            return;
-
-        PlotBounds bounds = GetPlotBounds(width, height);
-        DrawPlotFrame(canvas, bounds);
-
-        PlotSeriesViewModel[] plotSeriesWithPoints = ViewModel.PlotSeries
-            .Where(plotSeries => plotSeries.Points.Count > 0)
-            .ToArray();
-        if (plotSeriesWithPoints.Length == 0)
-        {
-            DrawPlotMessage(canvas, bounds, ViewModel.PlotSeries.Count == 0 ? "No sensors selected for plot" : "Waiting for sensor samples...");
-            return;
-        }
-
-        DateTime minTimestamp = DateTime.MaxValue;
-        DateTime maxTimestamp = DateTime.MinValue;
-
-        foreach (PlotSeriesViewModel plotSeries in plotSeriesWithPoints)
-        {
-            foreach (PlotPointViewModel point in plotSeries.Points)
-            {
-                minTimestamp = point.Timestamp < minTimestamp ? point.Timestamp : minTimestamp;
-                maxTimestamp = point.Timestamp > maxTimestamp ? point.Timestamp : maxTimestamp;
-            }
-        }
-
-        if (minTimestamp == DateTime.MaxValue || maxTimestamp == DateTime.MinValue)
-            return;
-
-        if (ViewModel.PlotTimeWindow.HasValue)
-            minTimestamp = maxTimestamp - ViewModel.PlotTimeWindow.Value;
-
-        if (maxTimestamp <= minTimestamp)
-            maxTimestamp = minTimestamp.AddSeconds(1);
-
-        List<PlotSeriesSample> visibleSeries = [];
-        foreach (PlotSeriesViewModel plotSeries in plotSeriesWithPoints)
-        {
-            PlotPointViewModel[] points = plotSeries.Points
-                .Where(point => point.Timestamp >= minTimestamp && point.Timestamp <= maxTimestamp)
-                .OrderBy(point => point.Timestamp)
-                .ToArray();
-            if (points.Length > 0)
-                visibleSeries.Add(new PlotSeriesSample(plotSeries, points));
-        }
-
-        if (visibleSeries.Count == 0)
-        {
-            DrawPlotMessage(canvas, bounds, "No samples in the selected time range");
-            return;
-        }
-
-        AdjustPlotTimeRangeForSparseSamples(visibleSeries, ref minTimestamp, ref maxTimestamp);
-        visibleSeries = visibleSeries
-            .Select(sample => new PlotSeriesSample(
-                sample.Series,
-                sample.Points.Where(point => point.Timestamp >= minTimestamp && point.Timestamp <= maxTimestamp).ToArray()))
-            .Where(sample => sample.Points.Count > 0)
-            .ToList();
-        if (visibleSeries.Count == 0)
-        {
-            DrawPlotMessage(canvas, bounds, "Waiting for sensor samples...");
-            return;
-        }
-
-        DrawTimeAxis(canvas, bounds, minTimestamp, maxTimestamp);
-
-        IGrouping<SensorType, PlotSeriesSample>[] groups = visibleSeries
-            .GroupBy(sample => sample.Series.SensorType)
-            .OrderBy(group => group.Key)
-            .ToArray();
-
-        double axisHeight = ViewModel.PlotStackedAxes ? bounds.Height / groups.Length : bounds.Height;
-        for (int i = 0; i < groups.Length; i++)
-        {
-            IGrouping<SensorType, PlotSeriesSample> group = groups[i];
-            PlotSeriesSample[] samples = group.ToArray();
-            GetValueRange(samples, out double minValue, out double maxValue);
-            ExpandPlotValueRange(ref minValue, ref maxValue);
-            ApplyPlotValueZoom(ref minValue, ref maxValue);
-
-            PlotAxisLayout axis = new(
-                group.Key,
-                samples.First().Series.Unit,
-                ViewModel.PlotStackedAxes ? bounds.Top + axisHeight * i : bounds.Top,
-                axisHeight,
-                minValue,
-                maxValue);
-
-            DrawValueAxis(canvas, bounds, axis, drawGrid: ViewModel.PlotStackedAxes || i == 0, titleIndex: i);
-            foreach (PlotSeriesSample sample in samples)
-                DrawPlotSeries(canvas, bounds, axis, minTimestamp, maxTimestamp, sample);
-        }
-    }
-
-    private static double GetPlotCanvasWidth(Canvas canvas)
-    {
-        return Math.Max(canvas.ActualWidth, canvas.MinWidth);
-    }
-
-    private static double GetPlotCanvasHeight(Canvas canvas)
-    {
-        return Math.Max(canvas.ActualHeight, canvas.MinHeight);
-    }
-
-    private PlotBounds GetPlotBounds(double width, double height)
-    {
-        double left = ViewModel.ShowPlotAxisLabels ? PlotLeftMargin : 0;
-        double top = ViewModel.ShowPlotAxisLabels ? PlotTopMargin : 0;
-        double right = ViewModel.ShowPlotAxisLabels ? PlotRightMargin : 0;
-        double bottom = ViewModel.ShowPlotAxisLabels ? PlotBottomMargin : 0;
-
-        if (width <= left + right + 32 || height <= top + bottom + 24)
-            return new PlotBounds(0, 0, Math.Max(1, width), Math.Max(1, height));
-
-        return new PlotBounds(left, top, Math.Max(1, width - left - right), Math.Max(1, height - top - bottom));
-    }
-
-    private void DrawPointMarker(Canvas canvas, global::Windows.Foundation.Point point, Brush fill)
-    {
-        Ellipse marker = new()
-        {
-            Width = PlotPointMarkerRadius * 2,
-            Height = PlotPointMarkerRadius * 2,
-            Fill = fill
-        };
-        Canvas.SetLeft(marker, point.X - PlotPointMarkerRadius);
-        Canvas.SetTop(marker, point.Y - PlotPointMarkerRadius);
-        canvas.Children.Add(marker);
-    }
-
-    private void DrawPlotFrame(Canvas canvas, PlotBounds bounds)
-    {
-        SolidColorBrush border = new(GetPlotBorderColor());
-        DrawLine(canvas, bounds.Left, bounds.Top, bounds.Right, bounds.Top, border, 1);
-        DrawLine(canvas, bounds.Left, bounds.Bottom, bounds.Right, bounds.Bottom, border, 1);
-        DrawLine(canvas, bounds.Left, bounds.Top, bounds.Left, bounds.Bottom, border, 1);
-        DrawLine(canvas, bounds.Right, bounds.Top, bounds.Right, bounds.Bottom, border, 1);
-    }
-
-    private void DrawValueAxis(Canvas canvas, PlotBounds bounds, PlotAxisLayout axis, bool drawGrid, int titleIndex)
-    {
-        SolidColorBrush gridBrush = new(GetPlotGridColor());
-        SolidColorBrush textBrush = new(GetPlotTextColor());
-        SolidColorBrush borderBrush = new(GetPlotBorderColor());
-        bool drawLabels = ShouldDrawPlotAxisLabels(bounds);
-
-        for (int i = 0; i <= 4; i++)
-        {
-            double y = axis.Top + axis.Height * i / 4;
-            if (drawGrid)
-                DrawLine(canvas, bounds.Left, y, bounds.Right, y, gridBrush, i is 0 or 4 ? 1 : 0.75);
-
-            if (drawLabels)
-            {
-                double value = axis.MaxValue - (axis.MaxValue - axis.MinValue) * i / 4;
-                AddPlotLabel(canvas, FormatPlotAxisValue(value), 4, y - 8, textBrush, PlotAxisLabelFontSize);
-            }
-        }
-
-        if (ViewModel.PlotStackedAxes)
-            DrawLine(canvas, bounds.Left, axis.Top, bounds.Right, axis.Top, borderBrush, 1);
-
-        if (drawLabels)
-        {
-            string unit = string.IsNullOrWhiteSpace(axis.Unit) ? "" : $" ({axis.Unit})";
-            AddPlotLabel(canvas, $"{SensorTypeDisplay.GetText(axis.SensorType)}{unit}", 4, axis.Top + 2 + (ViewModel.PlotStackedAxes ? 0 : titleIndex * 15), textBrush, PlotAxisLabelFontSize, 600);
-        }
-    }
-
-    private void DrawTimeAxis(Canvas canvas, PlotBounds bounds, DateTime minTimestamp, DateTime maxTimestamp)
-    {
-        TimeSpan range = maxTimestamp - minTimestamp;
-        if (range <= TimeSpan.Zero)
-            range = TimeSpan.FromSeconds(1);
-
-        SolidColorBrush gridBrush = new(GetPlotGridColor());
-        SolidColorBrush textBrush = new(GetPlotTextColor());
-        bool drawLabels = ShouldDrawPlotAxisLabels(bounds);
-        for (int i = 0; i <= 4; i++)
-        {
-            double x = bounds.Left + bounds.Width * i / 4;
-            DrawLine(canvas, x, bounds.Top, x, bounds.Bottom, gridBrush, i is 0 or 4 ? 1 : 0.75);
-            if (!drawLabels)
-                continue;
-
-            TimeSpan age = TimeSpan.FromTicks((long)Math.Round(range.Ticks * (4 - i) / 4.0));
-            TextBlock label = CreatePlotLabel(FormatPlotAge(age), textBrush, PlotAxisLabelFontSize);
-            label.Measure(new global::Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
-            double maxLeft = Math.Max(0, bounds.Right - label.DesiredSize.Width);
-            Canvas.SetLeft(label, Math.Clamp(x - label.DesiredSize.Width / 2, 0, maxLeft));
-            Canvas.SetTop(label, bounds.Bottom + 4);
-            canvas.Children.Add(label);
-        }
-    }
-
-    private static void AdjustPlotTimeRangeForSparseSamples(IReadOnlyList<PlotSeriesSample> visibleSeries, ref DateTime minTimestamp, ref DateTime maxTimestamp)
-    {
-        DateTime dataMin = DateTime.MaxValue;
-        DateTime dataMax = DateTime.MinValue;
-        foreach (PlotSeriesSample sample in visibleSeries)
-        {
-            foreach (PlotPointViewModel point in sample.Points)
-            {
-                dataMin = point.Timestamp < dataMin ? point.Timestamp : dataMin;
-                dataMax = point.Timestamp > dataMax ? point.Timestamp : dataMax;
-            }
-        }
-
-        if (dataMin == DateTime.MaxValue || dataMax == DateTime.MinValue)
-            return;
-
-        TimeSpan selectedRange = maxTimestamp - minTimestamp;
-        TimeSpan dataRange = dataMax - dataMin;
-        if (selectedRange <= TimeSpan.FromSeconds(30) || dataRange >= TimeSpan.FromSeconds(30))
-            return;
-
-        maxTimestamp = dataMax;
-        minTimestamp = maxTimestamp - TimeSpan.FromSeconds(30);
-    }
-
-    private bool ShouldDrawPlotAxisLabels(PlotBounds bounds)
-    {
-        return ViewModel.ShowPlotAxisLabels && bounds.Left >= PlotLeftMargin && bounds.Height > 24 && bounds.Width > 32;
-    }
-
-    private void DrawPlotSeries(
-        Canvas canvas,
-        PlotBounds bounds,
-        PlotAxisLayout axis,
-        DateTime minTimestamp,
-        DateTime maxTimestamp,
-        PlotSeriesSample sample)
-    {
-        long rangeTicks = Math.Max(1, (maxTimestamp - minTimestamp).Ticks);
-        SolidColorBrush stroke = new(GetVisiblePlotColor(sample.Series.Color));
-        Polyline line = new()
-        {
-            Stroke = stroke,
-            StrokeThickness = ViewModel.PlotStrokeThickness,
-            StrokeLineJoin = PenLineJoin.Round
-        };
-
-        foreach (PlotPointViewModel point in sample.Points)
-        {
-            double x = bounds.Left + (point.Timestamp - minTimestamp).Ticks / (double)rangeTicks * bounds.Width;
-            double y = axis.Bottom - ((point.Value - axis.MinValue) / (axis.MaxValue - axis.MinValue) * axis.Height);
-            line.Points.Add(new global::Windows.Foundation.Point(x, y));
-        }
-
-        canvas.Children.Add(line);
-        if (line.Points.Count > 0)
-            DrawPointMarker(canvas, line.Points[^1], stroke);
-    }
-
-    private void DrawPlotMessage(Canvas canvas, PlotBounds bounds, string message)
-    {
-        TextBlock label = CreatePlotLabel(message, new SolidColorBrush(GetPlotTextColor()), 13, 600);
-        label.Measure(new global::Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
-        Canvas.SetLeft(label, bounds.Left + Math.Max(0, (bounds.Width - label.DesiredSize.Width) / 2));
-        Canvas.SetTop(label, bounds.Top + Math.Max(0, (bounds.Height - label.DesiredSize.Height) / 2));
-        canvas.Children.Add(label);
-    }
-
-    private static void GetValueRange(IReadOnlyList<PlotSeriesSample> samples, out double minValue, out double maxValue)
-    {
-        minValue = double.MaxValue;
-        maxValue = double.MinValue;
-
-        foreach (PlotSeriesSample sample in samples)
-        {
-            foreach (PlotPointViewModel point in sample.Points)
-            {
-                minValue = Math.Min(minValue, point.Value);
-                maxValue = Math.Max(maxValue, point.Value);
-            }
-        }
-    }
-
-    private static void ExpandPlotValueRange(ref double minValue, ref double maxValue)
-    {
-        if (!double.IsFinite(minValue) || !double.IsFinite(maxValue) || minValue == double.MaxValue || maxValue == double.MinValue)
-        {
-            minValue = 0;
-            maxValue = 1;
-            return;
-        }
-
-        double range = maxValue - minValue;
-        if (Math.Abs(range) < double.Epsilon)
-        {
-            double delta = Math.Max(Math.Abs(maxValue) * 0.05, 1);
-            minValue -= delta;
-            maxValue += delta;
-            return;
-        }
-
-        double padding = range * 0.05;
-        minValue -= padding;
-        maxValue += padding;
-    }
-
-    private void ApplyPlotValueZoom(ref double minValue, ref double maxValue)
-    {
-        if (Math.Abs(_plotValueZoomFactor - 1) < 0.0001)
-            return;
-
-        double center = (minValue + maxValue) / 2;
-        double halfRange = (maxValue - minValue) * _plotValueZoomFactor / 2;
-        minValue = center - halfRange;
-        maxValue = center + halfRange;
-    }
-
-    private static void DrawLine(Canvas canvas, double x1, double y1, double x2, double y2, Brush stroke, double thickness)
-    {
-        canvas.Children.Add(new Line
-        {
-            X1 = x1,
-            X2 = x2,
-            Y1 = y1,
-            Y2 = y2,
-            Stroke = stroke,
-            StrokeThickness = thickness
-        });
-    }
-
-    private static void AddPlotLabel(Canvas canvas, string text, double left, double top, Brush foreground, double fontSize, ushort fontWeight = 400)
-    {
-        TextBlock label = CreatePlotLabel(text, foreground, fontSize, fontWeight);
-        Canvas.SetLeft(label, left);
-        Canvas.SetTop(label, top);
-        canvas.Children.Add(label);
-    }
-
-    private static TextBlock CreatePlotLabel(string text, Brush foreground, double fontSize, ushort fontWeight = 400)
-    {
-        return new TextBlock
-        {
-            Text = text,
-            FontSize = fontSize,
-            FontWeight = new global::Windows.UI.Text.FontWeight { Weight = fontWeight },
-            Foreground = foreground
-        };
-    }
-
-    private static string FormatPlotAxisValue(double value)
-    {
-        double absoluteValue = Math.Abs(value);
-        if (absoluteValue >= 1000)
-            return value.ToString("F0", CultureInfo.CurrentCulture);
-        if (absoluteValue >= 100)
-            return value.ToString("F1", CultureInfo.CurrentCulture);
-        if (absoluteValue >= 10)
-            return value.ToString("F2", CultureInfo.CurrentCulture);
-        return value.ToString("F3", CultureInfo.CurrentCulture);
-    }
-
-    private static string FormatPlotAge(TimeSpan age)
-    {
-        if (age.TotalHours >= 1)
-            return $"{(int)age.TotalHours}:{age.Minutes:00}";
-
-        return $"{(int)age.TotalMinutes}:{age.Seconds:00}";
-    }
-
-    private global::Windows.UI.Color GetPlotBackgroundColor()
-    {
-        return ViewModel.ThemeMode switch
-        {
-            AppThemeMode.Black => Colors.Black,
-            AppThemeMode.Dark => global::Windows.UI.Color.FromArgb(255, 24, 24, 24),
-            AppThemeMode.Auto when IsDarkPlotTheme() => global::Windows.UI.Color.FromArgb(255, 24, 24, 24),
-            _ => Colors.White
-        };
-    }
-
-    private global::Windows.UI.Color GetPlotBorderColor()
-    {
-        return IsDarkPlotTheme()
-            ? global::Windows.UI.Color.FromArgb(200, 210, 210, 210)
-            : global::Windows.UI.Color.FromArgb(180, 72, 72, 72);
-    }
-
-    private global::Windows.UI.Color GetPlotGridColor()
-    {
-        return IsDarkPlotTheme()
-            ? global::Windows.UI.Color.FromArgb(85, 190, 190, 190)
-            : global::Windows.UI.Color.FromArgb(85, 96, 96, 96);
-    }
-
-    private global::Windows.UI.Color GetPlotTextColor()
-    {
-        return IsDarkPlotTheme()
-            ? global::Windows.UI.Color.FromArgb(230, 245, 245, 245)
-            : global::Windows.UI.Color.FromArgb(230, 24, 24, 24);
-    }
-
-    private global::Windows.UI.Color GetVisiblePlotColor(global::Windows.UI.Color color)
-    {
-        double luminance = GetRelativeLuminance(color);
-        if (IsDarkPlotTheme() && luminance < 0.35)
-            return MixColor(color, Colors.White, 0.45);
-
-        if (!IsDarkPlotTheme() && luminance > 0.82)
-            return MixColor(color, Colors.Black, 0.4);
-
-        return color;
-    }
-
-    private bool IsDarkPlotTheme()
-    {
-        return ViewModel.ThemeMode switch
-        {
-            AppThemeMode.Black or AppThemeMode.Dark => true,
-            AppThemeMode.Light => false,
-            _ => _rootGrid != null && _rootGrid.ActualTheme == ElementTheme.Dark
-        };
-    }
-
-    private static global::Windows.UI.Color MixColor(global::Windows.UI.Color source, global::Windows.UI.Color target, double targetAmount)
-    {
-        targetAmount = Math.Clamp(targetAmount, 0, 1);
-        double sourceAmount = 1 - targetAmount;
-        return global::Windows.UI.Color.FromArgb(
-            source.A,
-            (byte)Math.Round(source.R * sourceAmount + target.R * targetAmount),
-            (byte)Math.Round(source.G * sourceAmount + target.G * targetAmount),
-            (byte)Math.Round(source.B * sourceAmount + target.B * targetAmount));
-    }
-
-    private static double GetRelativeLuminance(global::Windows.UI.Color color)
-    {
-        static double Linearize(byte channel)
-        {
-            double value = channel / 255.0;
-            return value <= 0.03928 ? value / 12.92 : Math.Pow((value + 0.055) / 1.055, 2.4);
-        }
-
-        return 0.2126 * Linearize(color.R) + 0.7152 * Linearize(color.G) + 0.0722 * Linearize(color.B);
+        _plotWindow?.RedrawPlot();
     }
 
     private void UpdatePlotLayout()
@@ -1726,8 +1157,8 @@ public sealed class MainWindow : Window
             _ => (Brush)Application.Current.Resources["ApplicationPageBackgroundThemeBrush"]
         };
 
+        _plotView.ApplyTheme(ViewModel.ThemeMode);
         _plotWindow?.ApplyTheme(ViewModel.ThemeMode);
-        DrawPlot();
     }
 
     private void RestoreWindowBounds()

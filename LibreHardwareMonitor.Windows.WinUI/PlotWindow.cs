@@ -3,13 +3,12 @@
 // Copyright (C) LibreHardwareMonitor and Contributors.
 
 using System;
+using LibreHardwareMonitor.Windows.WinUI.Controls;
 using LibreHardwareMonitor.Windows.WinUI.Services;
 using LibreHardwareMonitor.Windows.WinUI.ViewModels;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
 using Windows.Graphics;
 using WinRT.Interop;
 
@@ -19,10 +18,10 @@ public sealed class PlotWindow : Window
 {
     private readonly AppSettings _settings;
     private readonly AppWindow _appWindow;
-    private readonly Grid _root;
+    private readonly PlotView _plotView;
     private bool _closingFromOwner;
 
-    public PlotWindow(AppSettings settings)
+    internal PlotWindow(AppSettings settings, MainWindowViewModel viewModel)
     {
         _settings = settings;
 
@@ -30,36 +29,23 @@ public sealed class PlotWindow : Window
         _appWindow = AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(hwnd));
         _appWindow.Title = "Sensor Plot";
 
-        _root = new Grid();
-        PlotCanvas = new Canvas
-        {
-            MinWidth = 320,
-            MinHeight = 220,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch
-        };
-        PlotCanvas.SizeChanged += (_, _) => PlotSizeChanged?.Invoke(this, EventArgs.Empty);
-        _root.Children.Add(PlotCanvas);
-        Content = _root;
+        _plotView = new PlotView(viewModel);
+        Content = _plotView;
 
         RestoreBounds();
         Closed += PlotWindow_Closed;
     }
 
-    public event EventHandler? PlotSizeChanged;
-
     public event EventHandler? UserClosed;
-
-    public Canvas PlotCanvas { get; }
 
     public void ApplyTheme(AppThemeMode themeMode)
     {
-        _root.RequestedTheme = themeMode switch
-        {
-            AppThemeMode.Light => ElementTheme.Light,
-            AppThemeMode.Dark or AppThemeMode.Black => ElementTheme.Dark,
-            _ => ElementTheme.Default
-        };
+        _plotView.ApplyTheme(themeMode);
+    }
+
+    public void RedrawPlot()
+    {
+        _plotView.Redraw();
     }
 
     public void CloseFromOwner()
