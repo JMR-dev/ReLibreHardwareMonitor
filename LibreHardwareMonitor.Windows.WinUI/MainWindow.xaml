@@ -5,7 +5,8 @@
     x:Class="LibreHardwareMonitor.Windows.WinUI.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:local="using:LibreHardwareMonitor.Windows.WinUI">
+    xmlns:local="using:LibreHardwareMonitor.Windows.WinUI"
+    xmlns:controls="using:LibreHardwareMonitor.Windows.WinUI.Controls">
     <Grid x:Name="RootGrid">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -104,6 +105,26 @@
                         </TreeView.ItemTemplate>
                     </TreeView>
                 </Grid>
+            </Grid>
+            <Grid x:Name="PlotPane"
+                  Grid.Column="1"
+                  Grid.Row="0"
+                  Padding="8"
+                  BorderThickness="1,0,0,0"
+                  BorderBrush="{ThemeResource SystemControlForegroundBaseLowBrush}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Plot" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <Button Grid.Column="1" Content="Reset" Click="OnResetPlot" />
+                </Grid>
+                <controls:PlotView x:Name="PlotControl" Grid.Row="1" />
             </Grid>
         </Grid>
         <TextBlock x:Name="StatusText"

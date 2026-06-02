@@ -34,8 +34,6 @@ public sealed partial class MainWindow : Window
     private readonly WindowChromeManager _chromeManager;
     private readonly WindowPlacementService _placementService;
     private readonly DispatcherQueueTimer _timer;
-    private readonly PlotView _plotView;
-    private readonly Grid _plotPane;
     private readonly WinUiStartupTrace? _startupTrace;
     private readonly TrayIconService _trayIconService;
     private readonly DialogService _dialogService;
@@ -95,17 +93,7 @@ public sealed partial class MainWindow : Window
 
         MeasureStartup("MainWindow.PopulateMenuSubmenus", PopulateMenuSubmenus);
         MeasureStartup("MainWindow.PopulateSensorHeader", PopulateSensorHeader);
-
-        PlotView? builtPlot = null;
-        Grid plotPane = MeasureStartup("MainWindow.BuildPlotPane", () =>
-        {
-            Grid pane = BuildPlotPane(out PlotView pv);
-            builtPlot = pv;
-            return pane;
-        });
-        _plotPane = plotPane;
-        _plotView = builtPlot!;
-        ContentGrid.Children.Add(plotPane);
+        MeasureStartup("MainWindow.AttachPlotView", () => PlotControl.AttachViewModel(ViewModel));
 
         MeasureStartup("MainWindow.RestoreWindowBounds", _placementService.Restore);
         MeasureStartup("MainWindow.MaximizeWindow", _placementService.Maximize);
@@ -369,43 +357,6 @@ public sealed partial class MainWindow : Window
         header.Children.Add(CreateHeaderText("Min", 2, ViewModel.MinColumnVisibility, nameof(ViewModel.MinColumnVisibility)));
         header.Children.Add(CreateHeaderText("Max", 3, ViewModel.MaxColumnVisibility, nameof(ViewModel.MaxColumnVisibility)));
         SensorHeaderHost.Children.Add(header);
-    }
-
-    private Grid BuildPlotPane(out PlotView plotView)
-    {
-        Grid pane = new()
-        {
-            Padding = new Thickness(8),
-            BorderBrush = (Brush)Application.Current.Resources["SystemControlForegroundBaseLowBrush"],
-            BorderThickness = new Thickness(1, 0, 0, 0),
-            RowDefinitions =
-            {
-                new RowDefinition { Height = GridLength.Auto },
-                new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }
-            }
-        };
-
-        Grid toolbar = new()
-        {
-            ColumnDefinitions =
-            {
-                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
-                new ColumnDefinition { Width = GridLength.Auto }
-            }
-        };
-        toolbar.Children.Add(new TextBlock { Text = "Plot", FontWeight = new global::Windows.UI.Text.FontWeight { Weight = 600 }, VerticalAlignment = VerticalAlignment.Center });
-        Button reset = new() { Content = "Reset" };
-        reset.Click += (_, _) => ResetPlot();
-        Grid.SetColumn(reset, 1);
-        toolbar.Children.Add(reset);
-        pane.Children.Add(toolbar);
-
-        PlotView plotViewLocal = new(ViewModel);
-        Grid.SetRow(plotViewLocal, 1);
-        pane.Children.Add(plotViewLocal);
-        plotView = plotViewLocal;
-
-        return pane;
     }
 
     private void RootItems_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -809,16 +760,16 @@ public sealed partial class MainWindow : Window
     private void ResetPlot()
     {
         ViewModel.ResetPlot();
-        _plotView.ResetZoom();
+        PlotControl.ResetZoom();
         _secondaryWindows.RedrawPlot();
     }
 
     private void DrawPlot()
     {
         if (ViewModel.PlotLocation == PlotLocation.Window)
-            _plotView.Clear();
+            PlotControl.Clear();
         else
-            _plotView.Redraw();
+            PlotControl.Redraw();
 
         _secondaryWindows.RedrawPlot();
     }
@@ -828,11 +779,11 @@ public sealed partial class MainWindow : Window
         ContentGrid.ColumnDefinitions[1].Width = ViewModel.ShowPlot && ViewModel.PlotLocation == PlotLocation.Right ? new GridLength(320) : new GridLength(0);
         ContentGrid.RowDefinitions[1].Height = ViewModel.ShowPlot && ViewModel.PlotLocation == PlotLocation.Bottom ? new GridLength(220) : new GridLength(0);
 
-        _plotPane.Visibility = ViewModel.PlotVisibility;
-        Grid.SetRow(_plotPane, ViewModel.PlotGridRow);
-        Grid.SetColumn(_plotPane, ViewModel.PlotGridColumn);
-        Grid.SetRowSpan(_plotPane, ViewModel.PlotGridRowSpan);
-        Grid.SetColumnSpan(_plotPane, ViewModel.PlotGridColumnSpan);
+        PlotPane.Visibility = ViewModel.PlotVisibility;
+        Grid.SetRow(PlotPane, ViewModel.PlotGridRow);
+        Grid.SetColumn(PlotPane, ViewModel.PlotGridColumn);
+        Grid.SetRowSpan(PlotPane, ViewModel.PlotGridRowSpan);
+        Grid.SetColumnSpan(PlotPane, ViewModel.PlotGridColumnSpan);
         Grid.SetRowSpan(SensorPane, ViewModel.SensorGridRowSpan);
         Grid.SetColumnSpan(SensorPane, ViewModel.SensorGridColumnSpan);
         UpdatePlotWindowVisibility();
@@ -855,7 +806,7 @@ public sealed partial class MainWindow : Window
             _ => (Brush)Application.Current.Resources["ApplicationPageBackgroundThemeBrush"]
         };
 
-        _plotView.ApplyTheme(ViewModel.ThemeMode);
+        PlotControl.ApplyTheme(ViewModel.ThemeMode);
         _secondaryWindows.ApplyTheme(ViewModel.ThemeMode);
     }
 

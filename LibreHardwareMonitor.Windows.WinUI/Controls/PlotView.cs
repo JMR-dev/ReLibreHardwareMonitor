@@ -21,7 +21,7 @@ using Microsoft.UI.Xaml.Shapes;
 
 namespace LibreHardwareMonitor.Windows.WinUI.Controls;
 
-internal sealed class PlotView : Grid
+public sealed class PlotView : Grid
 {
     internal static readonly (string Label, int Value)[] PlotTimeWindowOptions =
     [
@@ -47,14 +47,12 @@ internal sealed class PlotView : Grid
     private const double PlotRightMargin = 12;
     private const double PlotTopMargin = 10;
 
-    private readonly MainWindowViewModel _viewModel;
+    private MainWindowViewModel? _viewModel;
     private readonly Canvas _canvas;
     private double _plotValueZoomFactor = 1;
 
-    public PlotView(MainWindowViewModel viewModel)
+    public PlotView()
     {
-        _viewModel = viewModel ?? throw new ArgumentNullException(nameof(viewModel));
-
         _canvas = new Canvas
         {
             MinWidth = 320,
@@ -63,11 +61,23 @@ internal sealed class PlotView : Grid
             VerticalAlignment = VerticalAlignment.Stretch,
             Background = (Brush)Application.Current.Resources["SystemControlBackgroundAltHighBrush"]
         };
-        _canvas.ContextFlyout = BuildPlotContextMenu();
         _canvas.SizeChanged += (_, _) => Redraw();
         _canvas.PointerWheelChanged += PlotCanvas_PointerWheelChanged;
         Children.Add(_canvas);
     }
+
+    public PlotView(MainWindowViewModel viewModel) : this()
+    {
+        AttachViewModel(viewModel);
+    }
+
+    public void AttachViewModel(MainWindowViewModel viewModel)
+    {
+        _viewModel = viewModel ?? throw new ArgumentNullException(nameof(viewModel));
+        _canvas.ContextFlyout = BuildPlotContextMenu();
+    }
+
+    private MainWindowViewModel VM => _viewModel ?? throw new InvalidOperationException("PlotView used before AttachViewModel.");
 
     public void ApplyTheme(AppThemeMode themeMode)
     {
@@ -93,9 +103,12 @@ internal sealed class PlotView : Grid
 
     public void Redraw()
     {
+        if (_viewModel == null)
+            return;
+
         _canvas.Children.Clear();
         _canvas.Background = new SolidColorBrush(GetPlotBackgroundColor());
-        if (!_viewModel.ShowPlot)
+        if (!VM.ShowPlot)
             return;
 
         double width = GetPlotCanvasWidth(_canvas);
@@ -106,12 +119,12 @@ internal sealed class PlotView : Grid
         PlotBounds bounds = GetPlotBounds(width, height);
         DrawPlotFrame(_canvas, bounds);
 
-        PlotSeriesViewModel[] plotSeriesWithPoints = _viewModel.PlotSeries
+        PlotSeriesViewModel[] plotSeriesWithPoints = VM.PlotSeries
             .Where(plotSeries => plotSeries.Points.Count > 0)
             .ToArray();
         if (plotSeriesWithPoints.Length == 0)
         {
-            DrawPlotMessage(_canvas, bounds, _viewModel.PlotSeries.Count == 0 ? "No sensors selected for plot" : "Waiting for sensor samples...");
+            DrawPlotMessage(_canvas, bounds, VM.PlotSeries.Count == 0 ? "No sensors selected for plot" : "Waiting for sensor samples...");
             return;
         }
 
@@ -130,8 +143,8 @@ internal sealed class PlotView : Grid
         if (minTimestamp == DateTime.MaxValue || maxTimestamp == DateTime.MinValue)
             return;
 
-        if (_viewModel.PlotTimeWindow.HasValue)
-            minTimestamp = maxTimestamp - _viewModel.PlotTimeWindow.Value;
+        if (VM.PlotTimeWindow.HasValue)
+            minTimestamp = maxTimestamp - VM.PlotTimeWindow.Value;
 
         if (maxTimestamp <= minTimestamp)
             maxTimestamp = minTimestamp.AddSeconds(1);
@@ -173,7 +186,7 @@ internal sealed class PlotView : Grid
             .OrderBy(group => group.Key)
             .ToArray();
 
-        double axisHeight = _viewModel.PlotStackedAxes ? bounds.Height / groups.Length : bounds.Height;
+        double axisHeight = VM.PlotStackedAxes ? bounds.Height / groups.Length : bounds.Height;
         for (int i = 0; i < groups.Length; i++)
         {
             IGrouping<SensorType, PlotSeriesSample> group = groups[i];
@@ -185,12 +198,12 @@ internal sealed class PlotView : Grid
             PlotAxisLayout axis = new(
                 group.Key,
                 samples.First().Series.Unit,
-                _viewModel.PlotStackedAxes ? bounds.Top + axisHeight * i : bounds.Top,
+                VM.PlotStackedAxes ? bounds.Top + axisHeight * i : bounds.Top,
                 axisHeight,
                 minValue,
                 maxValue);
 
-            DrawValueAxis(_canvas, bounds, axis, drawGrid: _viewModel.PlotStackedAxes || i == 0, titleIndex: i);
+            DrawValueAxis(_canvas, bounds, axis, drawGrid: VM.PlotStackedAxes || i == 0, titleIndex: i);
             foreach (PlotSeriesSample sample in samples)
                 DrawPlotSeries(_canvas, bounds, axis, minTimestamp, maxTimestamp, sample);
         }
@@ -199,23 +212,23 @@ internal sealed class PlotView : Grid
     private MenuFlyout BuildPlotContextMenu()
     {
         MenuFlyout flyout = new();
-        flyout.Items.Add(CreateToggleSettingItem("Stacked Axes", () => _viewModel.PlotStackedAxes, value => _viewModel.PlotStackedAxes = value));
-        flyout.Items.Add(CreateToggleSettingItem("Show Axes Labels", () => _viewModel.ShowPlotAxisLabels, value => _viewModel.ShowPlotAxisLabels = value));
+        flyout.Items.Add(CreateToggleSettingItem("Stacked Axes", () => VM.PlotStackedAxes, value => VM.PlotStackedAxes = value));
+        flyout.Items.Add(CreateToggleSettingItem("Show Axes Labels", () => VM.ShowPlotAxisLabels, value => VM.ShowPlotAxisLabels = value));
 
         MenuFlyoutSubItem timeAxis = new() { Text = "Time Axis" };
-        timeAxis.Items.Add(CreateToggleSettingItem("Enable Zoom", () => _viewModel.PlotTimeAxisZoomEnabled, value => _viewModel.PlotTimeAxisZoomEnabled = value));
+        timeAxis.Items.Add(CreateToggleSettingItem("Enable Zoom", () => VM.PlotTimeAxisZoomEnabled, value => VM.PlotTimeAxisZoomEnabled = value));
         timeAxis.Items.Add(new MenuFlyoutSeparator());
         foreach ((string label, int value) in PlotTimeWindowOptions)
         {
             ToggleMenuFlyoutItem item = new()
             {
                 Text = label,
-                IsChecked = _viewModel.PlotTimeWindowIndex == value,
+                IsChecked = VM.PlotTimeWindowIndex == value,
                 Tag = value
             };
             item.Click += (_, _) =>
             {
-                _viewModel.PlotTimeWindowIndex = value;
+                VM.PlotTimeWindowIndex = value;
                 foreach (ToggleMenuFlyoutItem sibling in timeAxis.Items.OfType<ToggleMenuFlyoutItem>())
                     sibling.IsChecked = Equals(sibling.Tag, value);
             };
@@ -225,7 +238,7 @@ internal sealed class PlotView : Grid
         flyout.Items.Add(timeAxis);
 
         MenuFlyoutSubItem valueAxes = new() { Text = "Value Axes" };
-        valueAxes.Items.Add(CreateToggleSettingItem("Enable Zoom", () => _viewModel.PlotValueAxesZoomEnabled, value => _viewModel.PlotValueAxesZoomEnabled = value));
+        valueAxes.Items.Add(CreateToggleSettingItem("Enable Zoom", () => VM.PlotValueAxesZoomEnabled, value => VM.PlotValueAxesZoomEnabled = value));
         valueAxes.Items.Add(CreateMenuItem("Autoscale All", (_, _) => ResetZoom()));
         flyout.Items.Add(valueAxes);
 
@@ -261,14 +274,14 @@ internal sealed class PlotView : Grid
             return;
 
         PlotBounds bounds = GetPlotBounds(GetPlotCanvasWidth(canvas), GetPlotCanvasHeight(canvas));
-        if (_viewModel.PlotValueAxesZoomEnabled && ShouldDrawPlotAxisLabels(bounds) && pointerPoint.Position.X <= bounds.Left)
+        if (VM.PlotValueAxesZoomEnabled && ShouldDrawPlotAxisLabels(bounds) && pointerPoint.Position.X <= bounds.Left)
         {
             ZoomPlotValueAxes(wheelDelta);
             e.Handled = true;
             return;
         }
 
-        if (_viewModel.PlotTimeAxisZoomEnabled)
+        if (VM.PlotTimeAxisZoomEnabled)
         {
             ZoomPlotTimeAxis(wheelDelta);
             e.Handled = true;
@@ -284,13 +297,13 @@ internal sealed class PlotView : Grid
     private void ZoomPlotTimeAxis(int wheelDelta)
     {
         int lastIndex = PlotTimeWindowOptions[^1].Value;
-        int index = _viewModel.PlotTimeWindowIndex;
+        int index = VM.PlotTimeWindowIndex;
         if (wheelDelta > 0)
             index = index == 0 ? lastIndex : Math.Max(1, index - 1);
         else
             index = index >= lastIndex ? 0 : index + 1;
 
-        _viewModel.PlotTimeWindowIndex = index;
+        VM.PlotTimeWindowIndex = index;
     }
 
     private static double GetPlotCanvasWidth(Canvas canvas)
@@ -305,10 +318,10 @@ internal sealed class PlotView : Grid
 
     private PlotBounds GetPlotBounds(double width, double height)
     {
-        double left = _viewModel.ShowPlotAxisLabels ? PlotLeftMargin : 0;
-        double top = _viewModel.ShowPlotAxisLabels ? PlotTopMargin : 0;
-        double right = _viewModel.ShowPlotAxisLabels ? PlotRightMargin : 0;
-        double bottom = _viewModel.ShowPlotAxisLabels ? PlotBottomMargin : 0;
+        double left = VM.ShowPlotAxisLabels ? PlotLeftMargin : 0;
+        double top = VM.ShowPlotAxisLabels ? PlotTopMargin : 0;
+        double right = VM.ShowPlotAxisLabels ? PlotRightMargin : 0;
+        double bottom = VM.ShowPlotAxisLabels ? PlotBottomMargin : 0;
 
         if (width <= left + right + 32 || height <= top + bottom + 24)
             return new PlotBounds(0, 0, Math.Max(1, width), Math.Max(1, height));
@@ -358,13 +371,13 @@ internal sealed class PlotView : Grid
             }
         }
 
-        if (_viewModel.PlotStackedAxes)
+        if (VM.PlotStackedAxes)
             DrawLine(canvas, bounds.Left, axis.Top, bounds.Right, axis.Top, borderBrush, 1);
 
         if (drawLabels)
         {
             string unit = string.IsNullOrWhiteSpace(axis.Unit) ? "" : $" ({axis.Unit})";
-            AddPlotLabel(canvas, $"{SensorTypeDisplay.GetText(axis.SensorType)}{unit}", 4, axis.Top + 2 + (_viewModel.PlotStackedAxes ? 0 : titleIndex * 15), textBrush, PlotAxisLabelFontSize, 600);
+            AddPlotLabel(canvas, $"{SensorTypeDisplay.GetText(axis.SensorType)}{unit}", 4, axis.Top + 2 + (VM.PlotStackedAxes ? 0 : titleIndex * 15), textBrush, PlotAxisLabelFontSize, 600);
         }
     }
 
@@ -421,7 +434,7 @@ internal sealed class PlotView : Grid
 
     private bool ShouldDrawPlotAxisLabels(PlotBounds bounds)
     {
-        return _viewModel.ShowPlotAxisLabels && bounds.Left >= PlotLeftMargin && bounds.Height > 24 && bounds.Width > 32;
+        return VM.ShowPlotAxisLabels && bounds.Left >= PlotLeftMargin && bounds.Height > 24 && bounds.Width > 32;
     }
 
     private void DrawPlotSeries(
@@ -437,7 +450,7 @@ internal sealed class PlotView : Grid
         Polyline line = new()
         {
             Stroke = stroke,
-            StrokeThickness = _viewModel.PlotStrokeThickness,
+            StrokeThickness = VM.PlotStrokeThickness,
             StrokeLineJoin = PenLineJoin.Round
         };
 
@@ -565,7 +578,7 @@ internal sealed class PlotView : Grid
 
     private global::Windows.UI.Color GetPlotBackgroundColor()
     {
-        return _viewModel.ThemeMode switch
+        return VM.ThemeMode switch
         {
             AppThemeMode.Black => Colors.Black,
             AppThemeMode.Dark => global::Windows.UI.Color.FromArgb(255, 24, 24, 24),
@@ -609,7 +622,7 @@ internal sealed class PlotView : Grid
 
     private bool IsDarkPlotTheme()
     {
-        return _viewModel.ThemeMode switch
+        return VM.ThemeMode switch
         {
             AppThemeMode.Black or AppThemeMode.Dark => true,
             AppThemeMode.Light => false,
