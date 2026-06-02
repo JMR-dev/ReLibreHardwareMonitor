@@ -332,7 +332,7 @@ public class RemoteWebServerTests
 
     private static RemoteWebServer CreateServer(bool authEnabled, string userName, string password)
     {
-        return new RemoteWebServer(() => null, Mock.Of<IComputer>(), new object(), "localhost", 8085, authEnabled, userName, RemoteWebServer.ComputeSHA256(password));
+        return new RemoteWebServer(Mock.Of<IComputer>(), new object(), "localhost", 8085, authEnabled, userName, RemoteWebServer.ComputeSHA256(password));
     }
 
     private static ISensor CreateSensor(string name, SensorType type, Identifier identifier, float? value = null, float? min = null, float? max = null)

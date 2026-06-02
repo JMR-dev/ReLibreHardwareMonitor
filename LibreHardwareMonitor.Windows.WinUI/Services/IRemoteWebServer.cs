@@ -24,6 +24,8 @@ public interface IRemoteWebServer : IDisposable
 
     string UserName { get; set; }
 
+    void SetRootProvider(Func<ViewModels.SensorTreeItemViewModel?> rootProvider);
+
     void SetPassword(string plainPassword);
 
     bool Start();

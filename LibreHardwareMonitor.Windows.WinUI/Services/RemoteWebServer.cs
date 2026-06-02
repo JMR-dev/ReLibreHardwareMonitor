@@ -26,14 +26,14 @@ public sealed class RemoteWebServer : IRemoteWebServer
 {
     private readonly IComputer _computer;
     private readonly object _sensorReadLock;
-    private readonly Func<SensorTreeItemViewModel?> _rootProvider;
+    private Func<SensorTreeItemViewModel?> _rootProvider = () => null;
     private readonly Version _version = typeof(RemoteWebServer).Assembly.GetName().Version ?? new Version(0, 0);
     private CancellationTokenSource? _cts;
     private HttpListener? _listener;
     private Task? _listenerTask;
+    private bool _quit;
 
     public RemoteWebServer(
-        Func<SensorTreeItemViewModel?> rootProvider,
         IComputer computer,
         object sensorReadLock,
         string listenerIp,
@@ -42,7 +42,6 @@ public sealed class RemoteWebServer : IRemoteWebServer
         string userName,
         string passwordHash)
     {
-        _rootProvider = rootProvider;
         _computer = computer;
         _sensorReadLock = sensorReadLock;
         ListenerIp = listenerIp;
@@ -59,6 +58,15 @@ public sealed class RemoteWebServer : IRemoteWebServer
         {
             _listener = null;
         }
+    }
+
+    /// <summary>
+    /// Sets the accessor used to read the current sensor tree root. Supplied after construction so the
+    /// server can be created by the container without a constructor dependency on the view model.
+    /// </summary>
+    public void SetRootProvider(Func<SensorTreeItemViewModel?> rootProvider)
+    {
+        _rootProvider = rootProvider;
     }
 
     public bool AuthEnabled { get; set; }
@@ -137,9 +145,10 @@ public sealed class RemoteWebServer : IRemoteWebServer
 
     public void Quit()
     {
-        if (PlatformNotSupported)
+        if (PlatformNotSupported || _quit)
             return;
 
+        _quit = true;
         Stop();
         try
         {
