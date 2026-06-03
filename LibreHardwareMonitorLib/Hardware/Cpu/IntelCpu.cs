@@ -9,6 +9,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
 using LibreHardwareMonitor.PawnIo;
+using static LibreHardwareMonitor.Hardware.HardwareStartupTrace;
 
 namespace LibreHardwareMonitor.Hardware.Cpu;
 
@@ -570,19 +571,6 @@ internal sealed class IntelCpu : GenericCpu
         }
 
         return result;
-    }
-
-    private static void Measure(HardwareStartupTrace startupTrace, string phase, Action action)
-    {
-        if (startupTrace != null)
-            startupTrace.Measure(phase, action);
-        else
-            action();
-    }
-
-    private static T Measure<T>(HardwareStartupTrace startupTrace, string phase, Func<T> action)
-    {
-        return startupTrace != null ? startupTrace.Measure(phase, action) : action();
     }
 
     private static bool ShouldDeferInitialUpdate(ISettings settings)

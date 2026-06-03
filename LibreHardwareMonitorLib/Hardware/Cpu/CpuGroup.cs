@@ -8,6 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using static LibreHardwareMonitor.Hardware.HardwareStartupTrace;
 
 namespace LibreHardwareMonitor.Hardware.Cpu;
 
@@ -41,7 +42,7 @@ internal class CpuGroup : IGroup
             _threads[index] = coreThreads;
 
             GenericCpu cpu = Measure(startupTrace,
-                                     $"CpuGroup.Processor{index}.{GetCpuConstructorName(threads[0])}",
+                                     $"CpuGroup.Processor{index}.CreateCpu",
                                      () => CreateCpu(index, coreThreads, settings, startupTrace),
                                      DescribeCpu);
             if (cpu != null)
@@ -137,36 +138,6 @@ internal class CpuGroup : IGroup
         }
     }
 
-    private static string GetCpuConstructorName(CpuId thread)
-    {
-        switch (thread.Vendor)
-        {
-            case Vendor.Intel:
-                return nameof(IntelCpu);
-            case Vendor.AMD:
-                switch (thread.Family)
-                {
-                    case 0x0F:
-                        return nameof(Amd0FCpu);
-                    case 0x10:
-                    case 0x11:
-                    case 0x12:
-                    case 0x14:
-                    case 0x15:
-                    case 0x16:
-                        return "UnsupportedAmdCpu";
-                    case 0x17:
-                    case 0x19:
-                    case 0x1A:
-                        return nameof(Amd17Cpu);
-                    default:
-                        return nameof(GenericCpu);
-                }
-            default:
-                return nameof(GenericCpu);
-        }
-    }
-
     private static string DescribeProcessorThreads(CpuId[][] processorThreads)
     {
         int threadCount = 0;
@@ -178,12 +149,7 @@ internal class CpuGroup : IGroup
 
     private static string DescribeCpu(GenericCpu cpu)
     {
-        return cpu != null ? $"{cpu.Name}, {cpu.Sensors.Length} sensor(s)" : "Unsupported CPU family";
-    }
-
-    private static T Measure<T>(HardwareStartupTrace startupTrace, string phase, Func<T> action, Func<T, string> getDetail)
-    {
-        return startupTrace != null ? startupTrace.Measure(phase, action, getDetail) : action();
+        return cpu != null ? $"{cpu.GetType().Name}: {cpu.Name}, {cpu.Sensors.Length} sensor(s)" : "Unsupported CPU family";
     }
 
     private static CpuId[][] GetProcessorThreads()

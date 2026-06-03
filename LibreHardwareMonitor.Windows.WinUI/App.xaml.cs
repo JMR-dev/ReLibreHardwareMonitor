@@ -25,20 +25,20 @@ public partial class App : Application
     {
         _startupTrace = StartupTracer.Create();
         _startupTrace.Mark("App.Constructor.Begin");
-        MeasureStartup("App.WireExceptionHandlers", () =>
+        _startupTrace.Measure("App.WireExceptionHandlers", () =>
         {
             UnhandledException += App_UnhandledException;
             AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
             TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
         });
-        MeasureStartup("App.InitializeComponent", InitializeComponent);
+        _startupTrace.Measure("App.InitializeComponent", InitializeComponent);
         _startupTrace.Mark("App.Constructor.Complete");
         _startupTrace.Flush();
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
-        MeasureStartup("App.OnLaunched", LaunchMainWindow);
+        _startupTrace.Measure("App.OnLaunched", LaunchMainWindow);
     }
 
     private void LaunchMainWindow()
@@ -50,16 +50,16 @@ public partial class App : Application
         try
         {
             _startupTrace.Mark("App.LaunchMainWindow.Begin");
-            _serviceProvider = MeasureStartup("App.BuildServiceProvider", () =>
+            _serviceProvider = _startupTrace.Measure("App.BuildServiceProvider", () =>
                 new ServiceCollection().AddAppServices(_startupTrace).BuildServiceProvider());
-            MainWindow mainWindow = MeasureStartup("App.CreateMainWindow", () => new MainWindow(
+            MainWindow mainWindow = _startupTrace.Measure("App.CreateMainWindow", () => new MainWindow(
                 _serviceProvider.GetRequiredService<MainWindowViewModel>(),
                 _startupTrace,
                 _serviceProvider.GetRequiredService<IMainWindowRuntimeFactory>(),
                 _serviceProvider));
             _window = mainWindow;
-            MeasureStartup("App.ActivateWindow", mainWindow.Activate);
-            MeasureStartup("App.StartMonitoringAfterActivation", mainWindow.StartMonitoringAfterActivation);
+            _startupTrace.Measure("App.ActivateWindow", mainWindow.Activate);
+            _startupTrace.Measure("App.StartMonitoringAfterActivation", mainWindow.StartMonitoringAfterActivation);
             _startupTrace.Mark("App.LaunchMainWindow.Complete");
             _startupTrace.Flush();
         }
@@ -70,16 +70,6 @@ public partial class App : Application
             WriteExceptionLog("Window launch failed", ex);
             throw;
         }
-    }
-
-    private void MeasureStartup(string phase, Action action)
-    {
-        _startupTrace.Measure(phase, action);
-    }
-
-    private T MeasureStartup<T>(string phase, Func<T> action)
-    {
-        return _startupTrace.Measure(phase, action);
     }
 
     private static void App_UnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs args)

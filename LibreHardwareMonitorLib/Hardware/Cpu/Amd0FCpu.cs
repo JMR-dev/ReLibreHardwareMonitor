@@ -93,7 +93,9 @@ internal sealed class Amd0FCpu : AmdCpu
             Mutexes.ReleasePciBus();
         }
 
-        if (HasTimeStampCounter)
+        // TimeStampCounterFrequency is 0 while deferred TSC estimation is still pending; skip the clock math until it
+        // lands so the core/bus clocks keep their previous value instead of momentarily reporting 0 MHz (see IntelCpu).
+        if (HasTimeStampCounter && TimeStampCounterFrequency > 0)
         {
             double newBusClock = 0;
 

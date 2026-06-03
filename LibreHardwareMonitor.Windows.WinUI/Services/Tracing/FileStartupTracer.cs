@@ -99,6 +99,12 @@ internal sealed class FileStartupTracer : IStartupTracer
 
     public void Measure(string phase, Action action, Func<string>? getDetail)
     {
+        if (IsComplete)
+        {
+            action();
+            return;
+        }
+
         TimeSpan start = _totalStopwatch.Elapsed;
         Stopwatch stopwatch = Stopwatch.StartNew();
         try
@@ -117,18 +123,16 @@ internal sealed class FileStartupTracer : IStartupTracer
 
     public T Measure<T>(string phase, Func<T> action)
     {
-        return Measure(phase, action, null);
-    }
+        if (IsComplete)
+            return action();
 
-    public T Measure<T>(string phase, Func<T> action, Func<T, string>? getDetail)
-    {
         TimeSpan start = _totalStopwatch.Elapsed;
         Stopwatch stopwatch = Stopwatch.StartNew();
         try
         {
             T result = action();
             stopwatch.Stop();
-            AddEntry(phase, start, stopwatch.Elapsed, "OK", GetDetail(result, getDetail));
+            AddEntry(phase, start, stopwatch.Elapsed, "OK", "");
             return result;
         }
         catch (Exception ex)
@@ -141,42 +145,19 @@ internal sealed class FileStartupTracer : IStartupTracer
 
     public async Task MeasureAsync(string phase, Func<Task> action)
     {
-        await MeasureAsync(phase, action, null);
-    }
+        if (IsComplete)
+        {
+            await action();
+            return;
+        }
 
-    public async Task MeasureAsync(string phase, Func<Task> action, Func<string>? getDetail)
-    {
         TimeSpan start = _totalStopwatch.Elapsed;
         Stopwatch stopwatch = Stopwatch.StartNew();
         try
         {
             await action();
             stopwatch.Stop();
-            AddEntry(phase, start, stopwatch.Elapsed, "OK", GetDetail(getDetail));
-        }
-        catch (Exception ex)
-        {
-            stopwatch.Stop();
-            AddEntry(phase, start, stopwatch.Elapsed, "ERROR", $"{ex.GetType().FullName}: {ex.Message}");
-            throw;
-        }
-    }
-
-    public async Task<T> MeasureAsync<T>(string phase, Func<Task<T>> action)
-    {
-        return await MeasureAsync(phase, action, null);
-    }
-
-    public async Task<T> MeasureAsync<T>(string phase, Func<Task<T>> action, Func<T, string>? getDetail)
-    {
-        TimeSpan start = _totalStopwatch.Elapsed;
-        Stopwatch stopwatch = Stopwatch.StartNew();
-        try
-        {
-            T result = await action();
-            stopwatch.Stop();
-            AddEntry(phase, start, stopwatch.Elapsed, "OK", GetDetail(result, getDetail));
-            return result;
+            AddEntry(phase, start, stopwatch.Elapsed, "OK", "");
         }
         catch (Exception ex)
         {
@@ -205,21 +186,6 @@ internal sealed class FileStartupTracer : IStartupTracer
         try
         {
             return getDetail() ?? "";
-        }
-        catch (Exception ex)
-        {
-            return $"Detail unavailable: {ex.GetType().FullName}: {ex.Message}";
-        }
-    }
-
-    private static string GetDetail<T>(T result, Func<T, string>? getDetail)
-    {
-        if (getDetail == null)
-            return "";
-
-        try
-        {
-            return getDetail(result) ?? "";
         }
         catch (Exception ex)
         {

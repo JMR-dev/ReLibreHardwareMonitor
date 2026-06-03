@@ -11,6 +11,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using static LibreHardwareMonitor.Hardware.HardwareStartupTrace;
 
 namespace LibreHardwareMonitor.Hardware.Cpu;
 
@@ -180,19 +181,6 @@ public class GenericCpu : Hardware
         };
 
         return new Identifier(s, processorIndex.ToString(CultureInfo.InvariantCulture));
-    }
-
-    private static void Measure(HardwareStartupTrace startupTrace, string phase, Action action)
-    {
-        if (startupTrace != null)
-            startupTrace.Measure(phase, action);
-        else
-            action();
-    }
-
-    private static T Measure<T>(HardwareStartupTrace startupTrace, string phase, Func<T> action, Func<T, string> getDetail)
-    {
-        return startupTrace != null ? startupTrace.Measure(phase, action, getDetail) : action();
     }
 
     private static void EstimateTimeStampCounterFrequency(CancellationToken cancellationToken, out double frequency, out double error)

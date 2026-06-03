@@ -228,34 +228,26 @@ public sealed class HardwareMonitorService : IHardwareMonitorService
         ForceDriveWakeup = Settings.GetValue("forceDriveWakeupItem", false);
     }
 
+    private static readonly string[] WinUiDeferredDetectionDefaults =
+    {
+        DeferDimmDetectionSetting,
+        DeferCpuInitialUpdateSetting,
+        DeferTscEstimationSetting,
+        DeferNvidiaDetectionSetting,
+        DeferStorageDetectionSetting,
+        DeferNetworkDetectionSetting,
+        DeferIntelGpuDetectionSetting,
+        DeferControllerDetectionSetting,
+        DeferPsuDetectionSetting,
+    };
+
     private void ApplyWinUiHardwareDefaults()
     {
-        if (!Settings.Contains(DeferDimmDetectionSetting))
-            Settings.SetValue(DeferDimmDetectionSetting, true);
-
-        if (!Settings.Contains(DeferCpuInitialUpdateSetting))
-            Settings.SetValue(DeferCpuInitialUpdateSetting, true);
-
-        if (!Settings.Contains(DeferTscEstimationSetting))
-            Settings.SetValue(DeferTscEstimationSetting, true);
-
-        if (!Settings.Contains(DeferNvidiaDetectionSetting))
-            Settings.SetValue(DeferNvidiaDetectionSetting, true);
-
-        if (!Settings.Contains(DeferStorageDetectionSetting))
-            Settings.SetValue(DeferStorageDetectionSetting, true);
-
-        if (!Settings.Contains(DeferNetworkDetectionSetting))
-            Settings.SetValue(DeferNetworkDetectionSetting, true);
-
-        if (!Settings.Contains(DeferIntelGpuDetectionSetting))
-            Settings.SetValue(DeferIntelGpuDetectionSetting, true);
-
-        if (!Settings.Contains(DeferControllerDetectionSetting))
-            Settings.SetValue(DeferControllerDetectionSetting, true);
-
-        if (!Settings.Contains(DeferPsuDetectionSetting))
-            Settings.SetValue(DeferPsuDetectionSetting, true);
+        foreach (string setting in WinUiDeferredDetectionDefaults)
+        {
+            if (!Settings.Contains(setting))
+                Settings.SetValue(setting, true);
+        }
     }
 
     private void SetHardwareEnabled(string settingName, bool value, Action<bool> setter)

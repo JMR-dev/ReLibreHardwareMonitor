@@ -16,6 +16,7 @@ using RAMSPDToolkit.SPD;
 using RAMSPDToolkit.SPD.Enums;
 using RAMSPDToolkit.SPD.Interop.Shared;
 using RAMSPDToolkit.Windows.Driver;
+using static LibreHardwareMonitor.Hardware.HardwareStartupTrace;
 
 namespace LibreHardwareMonitor.Hardware.Memory;
 
@@ -272,23 +273,5 @@ internal class MemoryGroup : IGroup, IHardwareChanged, IHardwareDiscoveryTask
         _hardware = [.. _hardware, .. additions];
         foreach (Hardware hardware in additions)
             HardwareAdded?.Invoke(hardware);
-    }
-
-    private static void Measure(HardwareStartupTrace startupTrace, string phase, Action action)
-    {
-        if (startupTrace != null)
-            startupTrace.Measure(phase, action);
-        else
-            action();
-    }
-
-    private static T Measure<T>(HardwareStartupTrace startupTrace, string phase, Func<T> action)
-    {
-        return startupTrace != null ? startupTrace.Measure(phase, action) : action();
-    }
-
-    private static T Measure<T>(HardwareStartupTrace startupTrace, string phase, Func<T> action, Func<T, string> getDetail)
-    {
-        return startupTrace != null ? startupTrace.Measure(phase, action, getDetail) : action();
     }
 }

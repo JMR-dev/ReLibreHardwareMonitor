@@ -64,9 +64,9 @@ public sealed partial class MainWindow : Window
         _serviceProvider = serviceProvider;
         _startupTrace.Mark("MainWindow.Constructor.Begin");
 
-        MeasureStartup("MainWindow.InitializeComponent", InitializeComponent);
+        _startupTrace.Measure("MainWindow.InitializeComponent", InitializeComponent);
 
-        MainWindowRuntime runtime = MeasureStartup(
+        MainWindowRuntime runtime = _startupTrace.Measure(
             "MainWindow.CreateRuntimeServices",
             () => runtimeFactory.Create(this, ViewModel, () => Content.XamlRoot, HideShowMainWindow));
         _appWindow = runtime.AppWindow;
@@ -78,7 +78,7 @@ public sealed partial class MainWindow : Window
         _columnMeasurer = runtime.ColumnMeasurer;
 
         _trayIconService.IsMainIconEnabled = ViewModel.MinimizeToTray;
-        MeasureStartup("MainWindow.ApplySavedDeviceColumnWidth", _columnMeasurer.ApplySavedWidth, () => FormattableString.Invariant($"width={_columnMeasurer.DeviceColumnWidth:F0}"));
+        _startupTrace.Measure("MainWindow.ApplySavedDeviceColumnWidth", _columnMeasurer.ApplySavedWidth, () => FormattableString.Invariant($"width={_columnMeasurer.DeviceColumnWidth:F0}"));
         _columnMeasurer.SettleTriggered += (_, _) => UpdateSensorColumnWidths();
 
         TryApplyMicaBackdrop();
@@ -86,16 +86,16 @@ public sealed partial class MainWindow : Window
         RootGrid.LayoutUpdated += RootGrid_LayoutUpdated;
         Bind(ContentGrid, UIElement.IsHitTestVisibleProperty, ViewModel, nameof(ViewModel.IsHardwareInteractionEnabled));
 
-        MeasureStartup("MainWindow.PopulateMenuSubmenus", PopulateMenuSubmenus);
-        MeasureStartup("MainWindow.PopulateSensorHeader", PopulateSensorHeader);
-        MeasureStartup("MainWindow.AttachPlotView", () => PlotControl.AttachViewModel(ViewModel));
+        _startupTrace.Measure("MainWindow.PopulateMenuSubmenus", PopulateMenuSubmenus);
+        _startupTrace.Measure("MainWindow.PopulateSensorHeader", PopulateSensorHeader);
+        _startupTrace.Measure("MainWindow.AttachPlotView", () => PlotControl.AttachViewModel(ViewModel));
 
-        MeasureStartup("MainWindow.RestoreWindowBounds", _placementService.Restore);
-        MeasureStartup("MainWindow.MaximizeWindow", _placementService.Maximize);
-        MeasureStartup("MainWindow.ApplyTheme", ApplyTheme);
-        MeasureStartup("MainWindow.UpdatePlotLayout", UpdatePlotLayout);
+        _startupTrace.Measure("MainWindow.RestoreWindowBounds", _placementService.Restore);
+        _startupTrace.Measure("MainWindow.MaximizeWindow", _placementService.Maximize);
+        _startupTrace.Measure("MainWindow.ApplyTheme", ApplyTheme);
+        _startupTrace.Measure("MainWindow.UpdatePlotLayout", UpdatePlotLayout);
 
-        _timer = MeasureStartup("MainWindow.CreateTimer", () =>
+        _timer = _startupTrace.Measure("MainWindow.CreateTimer", () =>
         {
             DispatcherQueueTimer timer = DispatcherQueue.CreateTimer();
             timer.Interval = ViewModel.UpdateInterval;
@@ -103,7 +103,7 @@ public sealed partial class MainWindow : Window
             return timer;
         });
 
-        MeasureStartup("MainWindow.WireEvents", () =>
+        _startupTrace.Measure("MainWindow.WireEvents", () =>
         {
             ViewModel.PropertyChanged += (_, args) =>
             {
@@ -173,11 +173,11 @@ public sealed partial class MainWindow : Window
             {
                 _startupTrace.Mark("MainWindow.StartMonitoringAfterActivation.Begin");
                 ApplyInitialWindowState();
-                await MeasureStartupAsync("MainWindowViewModel.StartAsync", ViewModel.StartAsync);
+                await _startupTrace.MeasureAsync("MainWindowViewModel.StartAsync", ViewModel.StartAsync);
                 SyncTraySensors();
                 SyncGadgetSensors();
                 UpdateGadgetVisibility();
-                MeasureStartup("MainWindow.StartTimer", _timer.Start);
+                _startupTrace.Measure("MainWindow.StartTimer", _timer.Start);
                 _startupTrace.Mark("MainWindow.StartMonitoringAfterActivation.Complete");
                 RequestStartupTraceComplete();
                 _startupTrace.Flush();
@@ -216,47 +216,6 @@ public sealed partial class MainWindow : Window
         RootGrid.LayoutUpdated -= RootGrid_LayoutUpdated;
         _startupTrace.Mark("MainWindow.FirstLayoutUpdated", GetRootSizeDetail());
         _startupTrace.Flush();
-    }
-
-    private void MeasureStartup(string phase, Action action)
-    {
-        if (_startupTrace.IsComplete)
-        {
-            action();
-            return;
-        }
-
-        _startupTrace.Measure(phase, action);
-    }
-
-    private void MeasureStartup(string phase, Action action, Func<string> getDetail)
-    {
-        if (_startupTrace.IsComplete)
-        {
-            action();
-            return;
-        }
-
-        _startupTrace.Measure(phase, action, getDetail);
-    }
-
-    private T MeasureStartup<T>(string phase, Func<T> action)
-    {
-        if (_startupTrace.IsComplete)
-            return action();
-
-        return _startupTrace.Measure(phase, action);
-    }
-
-    private async Task MeasureStartupAsync(string phase, Func<Task> action)
-    {
-        if (_startupTrace.IsComplete)
-        {
-            await action();
-            return;
-        }
-
-        await _startupTrace.MeasureAsync(phase, action);
     }
 
     private void PopulateMenuSubmenus()
@@ -547,7 +506,7 @@ public sealed partial class MainWindow : Window
 
     private void RebuildSensorTree()
     {
-        MeasureStartup("MainWindow.RebuildSensorTree", RebuildSensorTreeCore, GetRootSizeDetail);
+        _startupTrace.Measure("MainWindow.RebuildSensorTree", RebuildSensorTreeCore, GetRootSizeDetail);
         _columnMeasurer.ScheduleSettle();
         SyncTraySensors();
         SyncGadgetSensors();
@@ -842,7 +801,7 @@ public sealed partial class MainWindow : Window
 
     private void UpdateSensorColumnWidths()
     {
-        MeasureStartup("MainWindow.UpdateSensorColumnWidths", _columnMeasurer.UpdateWidths, () => FormattableString.Invariant($"rows={_columnMeasurer.RowCount}, cacheEntries={_columnMeasurer.CacheEntryCount}, deviceWidth={_columnMeasurer.DeviceColumnWidth:F0}, settled={_columnMeasurer.IsSettled}"));
+        _startupTrace.Measure("MainWindow.UpdateSensorColumnWidths", _columnMeasurer.UpdateWidths, () => FormattableString.Invariant($"rows={_columnMeasurer.RowCount}, cacheEntries={_columnMeasurer.CacheEntryCount}, deviceWidth={_columnMeasurer.DeviceColumnWidth:F0}, settled={_columnMeasurer.IsSettled}"));
     }
 
     private TextBlock CreateHeaderText(string text, int column, Visibility visibility, string? bindingPath = null)

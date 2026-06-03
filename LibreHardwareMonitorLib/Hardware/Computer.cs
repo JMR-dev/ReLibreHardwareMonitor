@@ -29,6 +29,7 @@ using LibreHardwareMonitor.Hardware.PowerMonitor;
 using LibreHardwareMonitor.Hardware.Psu.Corsair;
 using LibreHardwareMonitor.Hardware.Psu.Msi;
 using LibreHardwareMonitor.Hardware.Storage;
+using static LibreHardwareMonitor.Hardware.HardwareStartupTrace;
 
 namespace LibreHardwareMonitor.Hardware;
 
@@ -767,19 +768,6 @@ public class Computer : IComputer
         cancellationToken.ThrowIfCancellationRequested();
         if (_batteryEnabled)
             AddMeasuredGroup(startupTrace, "BatteryGroup", () => new BatteryGroup(_settings));
-    }
-
-    private static void Measure(HardwareStartupTrace startupTrace, string phase, Action action)
-    {
-        if (startupTrace != null)
-            startupTrace.Measure(phase, action);
-        else
-            action();
-    }
-
-    private static T Measure<T>(HardwareStartupTrace startupTrace, string phase, Func<T> action)
-    {
-        return startupTrace != null ? startupTrace.Measure(phase, action) : action();
     }
 
     private void AddMeasuredGroup(HardwareStartupTrace startupTrace, string phase, Func<IGroup> createGroup)

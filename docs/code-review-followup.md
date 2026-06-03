@@ -91,7 +91,7 @@ Removed from `AddDeferredGroup`/`AddDeferredGroups` (unreachable since `StartDef
 - **`CpuGroup`** was **not** parallelized — only refactored to extract `CreateCpu`. Returning `null` for unsupported AMD families preserves the original "add nothing" behavior.
 - **`TreeRebuildCoalescer`** correctly coalesces a burst into ~one rebuild (single debounced worker, re-arms on a late change).
 - **Disposed-`CancellationToken` reads** after cancellation are safe (`IsCancellationRequested` does not throw post-dispose).
-- **Startup tracing** is fully no-op when disabled (`HardwareStartupTrace.Create` returns `null`; the `Measure` wrappers and `MainWindowViewModel.MeasureStartup` short-circuit).
+- **Startup tracing** is fully no-op when disabled (`HardwareStartupTrace.Create` returns `null` and the static `HardwareStartupTrace.Measure` helpers run the action directly; on the WinUI side `NoOpStartupTracer` does the same, and `FileStartupTracer` short-circuits once startup is complete).
 - **WinUI tree updates are marshaled**: the VM's `HardwareMonitor_TreeRebuilt` handler marshals to the UI via `DispatcherQueue.TryEnqueue`. (Only `Logger` was unmarshaled — fixed in F3.)
 
 ---

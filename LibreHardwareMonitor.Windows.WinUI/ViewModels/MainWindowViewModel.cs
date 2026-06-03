@@ -873,12 +873,12 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
             IsHardwareLoading = true;
             _startupTrace.Mark("MainWindowViewModel.StartAsync.Begin");
             StatusText = "Initializing hardware sensors...";
-            await MeasureStartupAsync("MainWindowViewModel.HardwareMonitor.OpenAsync", () => _hardwareMonitor.OpenAsync(raiseTreeRebuilt: false));
-            MeasureStartup("MainWindowViewModel.UpdateRoot", UpdateRoot, GetRootDetail);
+            await _startupTrace.MeasureAsync("MainWindowViewModel.HardwareMonitor.OpenAsync", () => _hardwareMonitor.OpenAsync(raiseTreeRebuilt: false));
+            _startupTrace.Measure("MainWindowViewModel.UpdateRoot", UpdateRoot, GetRootDetail);
             StatusText = "Reading sensor values...";
-            await MeasureStartupAsync("MainWindowViewModel.InitialSensorValueUpdate", () => RefreshSensorValuesAsync(trackPlotPoints: true, logSensors: false));
-            MeasureStartup("MainWindowViewModel.StartWebServerFromSettings", StartWebServerFromSettings);
-            MeasureStartup("MainWindowViewModel.UpdateStatus", UpdateStatus, GetRootDetail);
+            await _startupTrace.MeasureAsync("MainWindowViewModel.InitialSensorValueUpdate", () => RefreshSensorValuesAsync(trackPlotPoints: true, logSensors: false));
+            _startupTrace.Measure("MainWindowViewModel.StartWebServerFromSettings", StartWebServerFromSettings);
+            _startupTrace.Measure("MainWindowViewModel.UpdateStatus", UpdateStatus, GetRootDetail);
             _isStarted = true;
             _startupTrace.Mark("MainWindowViewModel.StartAsync.Complete", GetRootDetail());
         }
@@ -956,47 +956,6 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         return $"{hardwareCount} hardware device(s), {sensorCount} sensor(s)";
     }
 
-    private void MeasureStartup(string phase, Action action)
-    {
-        if (_startupTrace.IsComplete)
-        {
-            action();
-            return;
-        }
-
-        _startupTrace.Measure(phase, action);
-    }
-
-    private void MeasureStartup(string phase, Action action, Func<string> getDetail)
-    {
-        if (_startupTrace.IsComplete)
-        {
-            action();
-            return;
-        }
-
-        _startupTrace.Measure(phase, action, getDetail);
-    }
-
-    private T MeasureStartup<T>(string phase, Func<T> action)
-    {
-        if (_startupTrace.IsComplete)
-            return action();
-
-        return _startupTrace.Measure(phase, action);
-    }
-
-    private async Task MeasureStartupAsync(string phase, Func<Task> action)
-    {
-        if (_startupTrace.IsComplete)
-        {
-            await action();
-            return;
-        }
-
-        await _startupTrace.MeasureAsync(phase, action);
-    }
-
     private void NotifyColumnVisibilityChanged()
     {
         OnPropertyChanged(nameof(ValueColumnVisibility));
@@ -1038,11 +997,11 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
     private void UpdateRoot()
     {
-        MeasureStartup("MainWindowViewModel.RootItems.Clear", RootItems.Clear);
-        SensorTreeItemViewModel root = MeasureStartup("MainWindowViewModel.GetHardwareRoot", () => _hardwareMonitor.Root);
-        MeasureStartup("MainWindowViewModel.ConfigureRoot", () => root.Configure(TemperatureUnit, ShowHiddenSensors, ShowValueColumn, ShowMinColumn, ShowMaxColumn), GetRootDetail);
-        MeasureStartup("MainWindowViewModel.RootItems.Add", () => RootItems.Add(root), GetRootDetail);
-        MeasureStartup("MainWindowViewModel.ApplySensorValuesTimeWindow", ApplySensorValuesTimeWindow, GetRootDetail);
+        _startupTrace.Measure("MainWindowViewModel.RootItems.Clear", RootItems.Clear);
+        SensorTreeItemViewModel root = _startupTrace.Measure("MainWindowViewModel.GetHardwareRoot", () => _hardwareMonitor.Root);
+        _startupTrace.Measure("MainWindowViewModel.ConfigureRoot", () => root.Configure(TemperatureUnit, ShowHiddenSensors, ShowValueColumn, ShowMinColumn, ShowMaxColumn), GetRootDetail);
+        _startupTrace.Measure("MainWindowViewModel.RootItems.Add", () => RootItems.Add(root), GetRootDetail);
+        _startupTrace.Measure("MainWindowViewModel.ApplySensorValuesTimeWindow", ApplySensorValuesTimeWindow, GetRootDetail);
         RefreshStatusCounts();
     }
 

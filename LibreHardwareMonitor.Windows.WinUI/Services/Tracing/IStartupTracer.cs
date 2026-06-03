@@ -27,13 +27,5 @@ internal interface IStartupTracer : IDisposable
 
     T Measure<T>(string phase, Func<T> action);
 
-    T Measure<T>(string phase, Func<T> action, Func<T, string>? getDetail);
-
     Task MeasureAsync(string phase, Func<Task> action);
-
-    Task MeasureAsync(string phase, Func<Task> action, Func<string>? getDetail);
-
-    Task<T> MeasureAsync<T>(string phase, Func<Task<T>> action);
-
-    Task<T> MeasureAsync<T>(string phase, Func<Task<T>> action, Func<T, string>? getDetail);
 }

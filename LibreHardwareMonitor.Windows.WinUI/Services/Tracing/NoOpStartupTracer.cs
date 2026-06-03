@@ -48,27 +48,7 @@ internal sealed class NoOpStartupTracer : IStartupTracer
         return action();
     }
 
-    public T Measure<T>(string phase, Func<T> action, Func<T, string>? getDetail)
-    {
-        return action();
-    }
-
     public Task MeasureAsync(string phase, Func<Task> action)
-    {
-        return action();
-    }
-
-    public Task MeasureAsync(string phase, Func<Task> action, Func<string>? getDetail)
-    {
-        return action();
-    }
-
-    public Task<T> MeasureAsync<T>(string phase, Func<Task<T>> action)
-    {
-        return action();
-    }
-
-    public Task<T> MeasureAsync<T>(string phase, Func<Task<T>> action, Func<T, string>? getDetail)
     {
         return action();
     }

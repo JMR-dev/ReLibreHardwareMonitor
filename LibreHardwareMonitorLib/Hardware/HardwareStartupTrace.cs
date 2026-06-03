@@ -92,6 +92,30 @@ internal sealed class HardwareStartupTrace : IDisposable
         AddEntry(phase, TimeSpan.Zero, "SKIPPED", null, reason);
     }
 
+    /// <summary>
+    /// Runs <paramref name="action" /> under <paramref name="trace" />, or directly when tracing is disabled
+    /// (<paramref name="trace" /> is null). Lets callers measure optional startup phases without repeating a null check.
+    /// </summary>
+    public static void Measure(HardwareStartupTrace trace, string phase, Action action)
+    {
+        if (trace != null)
+            trace.Measure(phase, action);
+        else
+            action();
+    }
+
+    /// <inheritdoc cref="Measure(HardwareStartupTrace, string, Action)" />
+    public static T Measure<T>(HardwareStartupTrace trace, string phase, Func<T> action)
+    {
+        return trace != null ? trace.Measure(phase, action) : action();
+    }
+
+    /// <inheritdoc cref="Measure(HardwareStartupTrace, string, Action)" />
+    public static T Measure<T>(HardwareStartupTrace trace, string phase, Func<T> action, Func<T, string> getDetail)
+    {
+        return trace != null ? trace.Measure(phase, action, getDetail) : action();
+    }
+
     private static bool IsEnabled(ISettings settings)
     {
         string settingValue = settings.GetValue(EnabledSetting, "false");
