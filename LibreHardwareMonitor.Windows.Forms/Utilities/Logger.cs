@@ -24,6 +24,10 @@ public class Logger
     private string[] _identifiers;
     private ISensor[] _sensors;
     private DateTime _lastLoggedTime = DateTime.MinValue;
+    // Guards the _sensors/_identifiers pair: when a defer env var is set, Computer.HardwareAdded can now fire on a
+    // background thread, so SensorAdded/SensorRemoved can run concurrently with the timer thread's rotation. Mirrors
+    // the WinUI Logger fix.
+    private readonly object _sync = new object();
 
     public LoggerFileRotation FileRotationMethod = LoggerFileRotation.PerSession;
 
@@ -60,25 +64,31 @@ public class Logger
 
     private void SensorAdded(ISensor sensor)
     {
-        if (_sensors == null)
-            return;
-
-        for (int i = 0; i < _sensors.Length; i++)
+        lock (_sync)
         {
-            if (sensor.Identifier.ToString() == _identifiers[i])
-                _sensors[i] = sensor;
+            if (_sensors == null)
+                return;
+
+            for (int i = 0; i < _sensors.Length; i++)
+            {
+                if (sensor.Identifier.ToString() == _identifiers[i])
+                    _sensors[i] = sensor;
+            }
         }
     }
 
     private void SensorRemoved(ISensor sensor)
     {
-        if (_sensors == null)
-            return;
-
-        for (int i = 0; i < _sensors.Length; i++)
+        lock (_sync)
         {
-            if (sensor == _sensors[i])
-                _sensors[i] = null;
+            if (_sensors == null)
+                return;
+
+            for (int i = 0; i < _sensors.Length; i++)
+            {
+                if (sensor == _sensors[i])
+                    _sensors[i] = null;
+            }
         }
     }
 
@@ -93,6 +103,7 @@ public class Logger
         if (!File.Exists(_fileName))
             return false;
 
+        string[] identifiers;
         try
         {
             string line;
@@ -102,28 +113,31 @@ public class Logger
             if (string.IsNullOrEmpty(line))
                 return false;
 
-            _identifiers = line.Split(',').Skip(1).ToArray();
+            identifiers = line.Split(',').Skip(1).ToArray();
         }
         catch
         {
-            _identifiers = null;
             return false;
         }
 
-        if (_identifiers.Length == 0)
-        {
-            _identifiers = null;
+        if (identifiers.Length == 0)
             return false;
-        }
 
-        _sensors = new ISensor[_identifiers.Length];
+        ISensor[] sensors = new ISensor[identifiers.Length];
         SensorVisitor visitor = new SensorVisitor(sensor =>
         {
-            for (int i = 0; i < _identifiers.Length; i++)
-                if (sensor.Identifier.ToString() == _identifiers[i])
-                    _sensors[i] = sensor;
+            for (int i = 0; i < identifiers.Length; i++)
+                if (sensor.Identifier.ToString() == identifiers[i])
+                    sensors[i] = sensor;
         });
         visitor.VisitComputer(_computer);
+
+        lock (_sync)
+        {
+            _identifiers = identifiers;
+            _sensors = sensors;
+        }
+
         return true;
     }
 
@@ -135,28 +149,34 @@ public class Logger
             list.Add(sensor);
         });
         visitor.VisitComputer(_computer);
-        _sensors = list.ToArray();
-        _identifiers = _sensors.Select(s => s.Identifier.ToString()).ToArray();
+        ISensor[] sensors = list.ToArray();
+        string[] identifiers = sensors.Select(s => s.Identifier.ToString()).ToArray();
+
+        lock (_sync)
+        {
+            _sensors = sensors;
+            _identifiers = identifiers;
+        }
 
         using (StreamWriter writer = new StreamWriter(_fileName, false))
         {
             writer.Write(",");
-            for (int i = 0; i < _sensors.Length; i++)
+            for (int i = 0; i < sensors.Length; i++)
             {
-                writer.Write(_sensors[i].Identifier);
-                if (i < _sensors.Length - 1)
+                writer.Write(sensors[i].Identifier);
+                if (i < sensors.Length - 1)
                     writer.Write(",");
                 else
                     writer.WriteLine();
             }
 
             writer.Write("Time,");
-            for (int i = 0; i < _sensors.Length; i++)
+            for (int i = 0; i < sensors.Length; i++)
             {
                 writer.Write('"');
-                writer.Write(_sensors[i].Name);
+                writer.Write(sensors[i].Name);
                 writer.Write('"');
-                if (i < _sensors.Length - 1)
+                if (i < sensors.Length - 1)
                     writer.Write(",");
                 else
                     writer.WriteLine();
@@ -199,24 +219,31 @@ public class Logger
                 break;
         }
 
+        ISensor[] sensors;
+        lock (_sync)
+            sensors = _sensors;
+
         try
         {
             using (StreamWriter writer = new StreamWriter(new FileStream(_fileName, FileMode.Append, FileAccess.Write, FileShare.ReadWrite)))
             {
                 writer.Write(now.ToString("G", CultureInfo.InvariantCulture));
                 writer.Write(",");
-                for (int i = 0; i < _sensors.Length; i++)
+                if (sensors != null)
                 {
-                    if (_sensors[i] != null)
+                    for (int i = 0; i < sensors.Length; i++)
                     {
-                        float? value = _sensors[i].Value;
-                        if (value.HasValue)
-                            writer.Write(value.Value.ToString("R", CultureInfo.InvariantCulture));
+                        if (sensors[i] != null)
+                        {
+                            float? value = sensors[i].Value;
+                            if (value.HasValue)
+                                writer.Write(value.Value.ToString("R", CultureInfo.InvariantCulture));
+                        }
+                        if (i < sensors.Length - 1)
+                            writer.Write(",");
+                        else
+                            writer.WriteLine();
                     }
-                    if (i < _sensors.Length - 1)
-                        writer.Write(",");
-                    else
-                        writer.WriteLine();
                 }
             }
         }

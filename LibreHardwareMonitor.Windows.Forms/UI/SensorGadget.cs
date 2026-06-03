@@ -62,11 +62,14 @@ public class SensorGadget : Gadget
     private StringFormat _alignRightStringFormat;
     private Color _fontColor;
     private Color _backgroundColor;
+    private readonly System.Threading.SynchronizationContext _uiSyncContext;
 
     public SensorGadget(IComputer computer, PersistentSettings settings, UnitManager unitManager)
     {
         _unitManager = unitManager;
         _settings = settings;
+        // Captured on the UI thread so the now-possibly-background HardwareAdded/HardwareRemoved re-dispatch here.
+        _uiSyncContext = System.Threading.SynchronizationContext.Current;
         computer.HardwareAdded += HardwareAdded;
         computer.HardwareRemoved += HardwareRemoved;
 
@@ -385,6 +388,12 @@ public class SensorGadget : Gadget
 
     private void HardwareRemoved(IHardware hardware)
     {
+        if (_uiSyncContext != null && System.Threading.SynchronizationContext.Current != _uiSyncContext)
+        {
+            _uiSyncContext.Post(_ => HardwareRemoved(hardware), null);
+            return;
+        }
+
         hardware.SensorAdded -= SensorAdded;
         hardware.SensorRemoved -= SensorRemoved;
 
@@ -397,6 +406,12 @@ public class SensorGadget : Gadget
 
     private void HardwareAdded(IHardware hardware)
     {
+        if (_uiSyncContext != null && System.Threading.SynchronizationContext.Current != _uiSyncContext)
+        {
+            _uiSyncContext.Post(_ => HardwareAdded(hardware), null);
+            return;
+        }
+
         foreach (ISensor sensor in hardware.Sensors)
             SensorAdded(sensor);
 

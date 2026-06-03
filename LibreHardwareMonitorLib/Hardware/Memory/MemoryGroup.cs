@@ -31,6 +31,9 @@ internal class MemoryGroup : IGroup, IHardwareChanged, IHardwareDiscoveryTask
     private Task _hardwareDiscoveryTask = Task.CompletedTask;
     private Exception _lastException;
     private bool _disposed = false;
+    private readonly ISettings _settings;
+    private bool _hasPendingDimmDetection;
+    private TimeSpan _pendingDimmDetectionDelay;
 
     public MemoryGroup(ISettings settings)
         : this(settings, null)
@@ -38,6 +41,8 @@ internal class MemoryGroup : IGroup, IHardwareChanged, IHardwareDiscoveryTask
 
     internal MemoryGroup(ISettings settings, HardwareStartupTrace startupTrace)
     {
+        _settings = settings;
+
         Measure(startupTrace, "MemoryGroup.Driver.Configure", () =>
         {
             if (DriverManager.Driver is null || !DriverManager.Driver.IsOpen)
@@ -58,12 +63,16 @@ internal class MemoryGroup : IGroup, IHardwareChanged, IHardwareDiscoveryTask
 
         if (ShouldDeferDimmDetection(settings))
         {
+            // Defer the start to StartHardwareDiscovery so Computer subscribes before any DIMM is announced.
             startupTrace?.Skip("MemoryGroup.DimmDetection", "Deferred to background.");
-            StartDimmDetectionTask(settings, TimeSpan.Zero);
+            _pendingDimmDetectionDelay = TimeSpan.Zero;
+            _hasPendingDimmDetection = true;
         }
         else if (!TryAddDimms(settings, startupTrace))
         {
-            StartRetryTask(settings);
+            // Synchronous detection found nothing yet; retry in the background, also started from StartHardwareDiscovery.
+            _pendingDimmDetectionDelay = _retryInterval;
+            _hasPendingDimmDetection = true;
         }
     }
 
@@ -75,6 +84,15 @@ internal class MemoryGroup : IGroup, IHardwareChanged, IHardwareDiscoveryTask
     public IReadOnlyList<IHardware> Hardware => _hardware;
 
     public Task HardwareDiscoveryTask => _hardwareDiscoveryTask;
+
+    public void StartHardwareDiscovery()
+    {
+        if (!_hasPendingDimmDetection)
+            return;
+
+        _hasPendingDimmDetection = false;
+        StartDimmDetectionTask(_settings, _pendingDimmDetectionDelay);
+    }
 
     public string GetReport()
     {
@@ -149,11 +167,6 @@ internal class MemoryGroup : IGroup, IHardwareChanged, IHardwareDiscoveryTask
         }
 
         return false;
-    }
-
-    private void StartRetryTask(ISettings settings)
-    {
-        StartDimmDetectionTask(settings, _retryInterval);
     }
 
     private void StartDimmDetectionTask(ISettings settings, TimeSpan initialDelay)
@@ -232,19 +245,7 @@ internal class MemoryGroup : IGroup, IHardwareChanged, IHardwareDiscoveryTask
 
     private static bool ShouldDeferDimmDetection(ISettings settings)
     {
-        string environmentValue = Environment.GetEnvironmentVariable(DeferDimmDetectionEnvironmentVariable);
-        if (!string.IsNullOrWhiteSpace(environmentValue))
-            return IsTruthy(environmentValue);
-
-        return IsTruthy(settings.GetValue(DeferDimmDetectionSetting, "false"));
-    }
-
-    private static bool IsTruthy(string value)
-    {
-        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("true", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("on", StringComparison.OrdinalIgnoreCase);
+        return SettingsParsing.ShouldDefer(settings, DeferDimmDetectionSetting, DeferDimmDetectionEnvironmentVariable);
     }
 
     private void AddDimms(List<SPDAccessor> accessors, ISettings settings, HardwareStartupTrace startupTrace)

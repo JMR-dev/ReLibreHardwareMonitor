@@ -56,6 +56,7 @@ public sealed partial class MainForm : Form
     private readonly SystemTray _systemTray;
     private readonly UnitManager _unitManager;
     private readonly UpdateVisitor _updateVisitor = new();
+    private readonly System.Threading.SynchronizationContext _uiSyncContext;
 
     private int _delayCount;
     private Form _plotForm;
@@ -164,6 +165,9 @@ public sealed partial class MainForm : Form
         perSessionFileRotationMenuItem.Checked = _logger.FileRotationMethod == LoggerFileRotation.PerSession;
         dailyFileRotationMenuItem.Checked = _logger.FileRotationMethod == LoggerFileRotation.Daily;
 
+        // Captured on the UI thread; HardwareAdded/HardwareRemoved can now fire on a background discovery thread
+        // (when a defer env var is set), so they re-dispatch here before touching the tree.
+        _uiSyncContext = System.Threading.SynchronizationContext.Current;
         _computer.HardwareAdded += HardwareAdded;
         _computer.HardwareRemoved += HardwareRemoved;
 
@@ -824,12 +828,24 @@ public sealed partial class MainForm : Form
 
     private void HardwareAdded(IHardware hardware)
     {
+        if (_uiSyncContext != null && System.Threading.SynchronizationContext.Current != _uiSyncContext)
+        {
+            _uiSyncContext.Post(_ => HardwareAdded(hardware), null);
+            return;
+        }
+
         SubHardwareAdded(hardware, _root);
         PlotSelectionChanged(this, null);
     }
 
     private void HardwareRemoved(IHardware hardware)
     {
+        if (_uiSyncContext != null && System.Threading.SynchronizationContext.Current != _uiSyncContext)
+        {
+            _uiSyncContext.Post(_ => HardwareRemoved(hardware), null);
+            return;
+        }
+
         List<HardwareNode> nodesToRemove = new();
         foreach (Node node in _root.Nodes)
         {

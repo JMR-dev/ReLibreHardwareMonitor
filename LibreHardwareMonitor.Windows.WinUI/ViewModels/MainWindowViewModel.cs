@@ -112,6 +112,8 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     private bool _isStarted;
     private bool _isStarting;
     private int _rootUpdateQueued;
+    private int _statusHardwareCount;
+    private int _statusSensorCount;
     private string _statusText = "";
     private TemperatureUnit _temperatureUnit;
     private int _updateIntervalIndex;
@@ -1041,14 +1043,21 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
         MeasureStartup("MainWindowViewModel.ConfigureRoot", () => root.Configure(TemperatureUnit, ShowHiddenSensors, ShowValueColumn, ShowMinColumn, ShowMaxColumn), GetRootDetail);
         MeasureStartup("MainWindowViewModel.RootItems.Add", () => RootItems.Add(root), GetRootDetail);
         MeasureStartup("MainWindowViewModel.ApplySensorValuesTimeWindow", ApplySensorValuesTimeWindow, GetRootDetail);
+        RefreshStatusCounts();
+    }
+
+    // Hardware/sensor counts change only when the tree is rebuilt, so cache them here (called from UpdateRoot) instead
+    // of re-walking the whole tree and re-aggregating Computer.Hardware on every per-tick UpdateStatus().
+    private void RefreshStatusCounts()
+    {
+        _statusHardwareCount = _hardwareMonitor.Computer.Hardware.Count;
+        _statusSensorCount = RootItems.FirstOrDefault()?.EnumerateSensors().Count() ?? 0;
     }
 
     private void UpdateStatus()
     {
-        int hardwareCount = _hardwareMonitor.Computer.Hardware.Count;
-        int sensorCount = RootItems.FirstOrDefault()?.EnumerateSensors().Count() ?? 0;
         string webServerStatus = RunWebServer ? $", web server {WebServerUrl}" : "";
-        StatusText = $"{hardwareCount} hardware devices, {sensorCount} sensors, update every {FormatInterval(UpdateInterval)}{webServerStatus}";
+        StatusText = $"{_statusHardwareCount} hardware devices, {_statusSensorCount} sensors, update every {FormatInterval(UpdateInterval)}{webServerStatus}";
     }
 
     private void RestartWebServerIfRunning()

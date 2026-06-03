@@ -9,6 +9,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace LibreHardwareMonitor.Hardware.Cpu;
@@ -40,6 +41,7 @@ public class GenericCpu : Hardware
     private ulong _lastTimeStampCount;
     private double _timeStampCounterFrequency;
     private Task _timeStampCounterFrequencyTask;
+    private CancellationTokenSource _timeStampCounterFrequencyCancellation;
 
     public GenericCpu(int processorIndex, CpuId[][] cpuId, ISettings settings)
         : this(processorIndex, cpuId, settings, null)
@@ -109,21 +111,23 @@ public class GenericCpu : Hardware
                 // The estimate is only a seed for the first Update() (~1 s out) and is then self-corrected from real
                 // TSC deltas, so the ~25 ms measurement window can run off the startup critical path.
                 startupTrace?.Skip("GenericCpu.EstimateTimeStampCounterFrequency", "Deferred to background.");
+                _timeStampCounterFrequencyCancellation = new CancellationTokenSource();
+                CancellationToken cancellationToken = _timeStampCounterFrequencyCancellation.Token;
                 _timeStampCounterFrequencyTask = Task.Run(() =>
                 {
                     try
                     {
-                        EstimateAndStoreTimeStampCounterFrequency(affinity, null);
+                        EstimateAndStoreTimeStampCounterFrequency(affinity, null, cancellationToken);
                     }
                     catch (Exception ex)
                     {
                         Debug.WriteLine($"Deferred TSC frequency estimation failed: {ex}");
                     }
-                });
+                }, cancellationToken);
             }
             else
             {
-                EstimateAndStoreTimeStampCounterFrequency(affinity, startupTrace);
+                EstimateAndStoreTimeStampCounterFrequency(affinity, startupTrace, CancellationToken.None);
             }
         }
     }
@@ -191,7 +195,7 @@ public class GenericCpu : Hardware
         return startupTrace != null ? startupTrace.Measure(phase, action, getDetail) : action();
     }
 
-    private static void EstimateTimeStampCounterFrequency(out double frequency, out double error)
+    private static void EstimateTimeStampCounterFrequency(CancellationToken cancellationToken, out double frequency, out double error)
     {
         // preload the function
         EstimateTimeStampCounterFrequency(0, out double f, out double e);
@@ -202,6 +206,10 @@ public class GenericCpu : Hardware
         frequency = 0;
         for (int i = 0; i < 5; i++)
         {
+            // Bail between measurement windows if Close() asked us to stop, so teardown is not held up.
+            if (cancellationToken.IsCancellationRequested)
+                break;
+
             EstimateTimeStampCounterFrequency(0.025, out f, out e);
             if (e < error)
             {
@@ -241,8 +249,12 @@ public class GenericCpu : Hardware
         error = beginError + endError;
     }
 
-    private void EstimateAndStoreTimeStampCounterFrequency(GroupAffinity affinity, HardwareStartupTrace startupTrace)
+    private void EstimateAndStoreTimeStampCounterFrequency(GroupAffinity affinity, HardwareStartupTrace startupTrace, CancellationToken cancellationToken)
     {
+        // If Close() cancelled before this ran, skip it so we neither pin a thread nor touch OpCode during teardown.
+        if (cancellationToken.IsCancellationRequested)
+            return;
+
         GroupAffinity previousAffinity = ThreadAffinity.Set(affinity);
         try
         {
@@ -250,7 +262,7 @@ public class GenericCpu : Hardware
             double error = 0;
             Measure(startupTrace,
                     "GenericCpu.EstimateTimeStampCounterFrequency",
-                    () => EstimateTimeStampCounterFrequency(out frequency, out error));
+                    () => EstimateTimeStampCounterFrequency(cancellationToken, out frequency, out error));
             StoreTimeStampCounterFrequency(frequency, error);
         }
         finally
@@ -271,19 +283,7 @@ public class GenericCpu : Hardware
 
     private static bool ShouldDeferTscEstimation(ISettings settings)
     {
-        string environmentValue = Environment.GetEnvironmentVariable(DeferTscEstimationEnvironmentVariable);
-        if (!string.IsNullOrWhiteSpace(environmentValue))
-            return IsTruthy(environmentValue);
-
-        return IsTruthy(settings.GetValue(DeferTscEstimationSetting, "false"));
-    }
-
-    private static bool IsTruthy(string value)
-    {
-        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("true", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("on", StringComparison.OrdinalIgnoreCase);
+        return SettingsParsing.ShouldDefer(settings, DeferTscEstimationSetting, DeferTscEstimationEnvironmentVariable);
     }
 
 
@@ -333,14 +333,21 @@ public class GenericCpu : Hardware
 
     public override void Close()
     {
+        // Cancel and fully wait for the deferred TSC estimation before tearing down: it calls OpCode.Rdtsc and pins
+        // thread affinity, so it must finish (or skip on cancellation) before base.Close()/OpCode teardown rather than
+        // being abandoned after a fixed timeout while still touching native state.
+        _timeStampCounterFrequencyCancellation?.Cancel();
         try
         {
-            _timeStampCounterFrequencyTask?.Wait(TimeSpan.FromMilliseconds(100));
+            _timeStampCounterFrequencyTask?.Wait();
         }
         catch (AggregateException ex)
         {
             Debug.WriteLine($"Deferred TSC frequency estimation failed while closing: {ex}");
         }
+
+        _timeStampCounterFrequencyCancellation?.Dispose();
+        _timeStampCounterFrequencyCancellation = null;
 
         base.Close();
     }

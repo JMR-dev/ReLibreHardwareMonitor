@@ -81,6 +81,11 @@ internal static class PasswordHasher
             return false;
         }
 
+        // Reject a missing salt or hash segment: an empty expected hash would make FixedTimeEquals(empty, empty) return
+        // true and authenticate any password. Hash() never produces this, so it only arises from a corrupted value.
+        if (salt.Length == 0 || expected.Length == 0)
+            return false;
+
         byte[] actual = Rfc2898DeriveBytes.Pbkdf2(password, salt, iterations, HashAlgorithmName.SHA256, expected.Length);
         return CryptographicOperations.FixedTimeEquals(actual, expected);
     }

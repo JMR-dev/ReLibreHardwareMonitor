@@ -97,15 +97,7 @@ internal sealed class HardwareStartupTrace : IDisposable
         string settingValue = settings.GetValue(EnabledSetting, "false");
         string environmentValue = Environment.GetEnvironmentVariable(EnabledEnvironmentVariable) ?? "";
 
-        return IsTruthy(settingValue) || IsTruthy(environmentValue);
-    }
-
-    private static bool IsTruthy(string value)
-    {
-        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("true", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("on", StringComparison.OrdinalIgnoreCase);
+        return SettingsParsing.IsTruthy(settingValue) || SettingsParsing.IsTruthy(environmentValue);
     }
 
     private static string GetLogFileName(ISettings settings)

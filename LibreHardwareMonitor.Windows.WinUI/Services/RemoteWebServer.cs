@@ -408,6 +408,13 @@ public sealed class RemoteWebServer : IRemoteWebServer
             sensor.Control.SetSoftware(float.Parse(value, CultureInfo.InvariantCulture));
     }
 
+    // Reused across requests: building a JsonSerializerOptions per request defeats System.Text.Json's per-options
+    // metadata cache, which matters because data.json is polled frequently.
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals
+    };
+
     private async Task SendJsonAsync(HttpListenerResponse response, HttpListenerRequest request)
     {
         Dictionary<string, object?> json = new()
@@ -425,12 +432,7 @@ public sealed class RemoteWebServer : IRemoteWebServer
         SensorTreeItemViewModel? root = _rootProvider();
         json["Children"] = root == null ? Array.Empty<object>() : new List<object> { GenerateJsonForNode(root, ref nodeIndex) };
 
-        JsonSerializerOptions options = new()
-        {
-            NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals
-        };
-
-        byte[] buffer = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(json, options));
+        byte[] buffer = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(json, JsonOptions));
         bool acceptGzip = request.Headers["Accept-Encoding"]?.IndexOf("gzip", StringComparison.OrdinalIgnoreCase) >= 0;
 
         WriteCommonHeaders(response);

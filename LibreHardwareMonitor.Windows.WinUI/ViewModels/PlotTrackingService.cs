@@ -78,17 +78,20 @@ internal sealed class PlotTrackingService
                     series.Color = sensorItem.PenColor.Value;
             }
 
+            // The pipeline below sorts and de-duplicates, so there is no need to OrderBy the whole (potentially 24h)
+            // history every tick; track the latest timestamp in the same pass instead of assuming the list is ordered.
             List<PlotPointViewModel> points = [];
-            foreach (SensorValue sensorValue in sensor.Values.OrderBy(value => value.Time))
+            DateTime? latestHistoryTimestamp = null;
+            foreach (SensorValue sensorValue in sensor.Values)
             {
                 double? displayedValue = SensorFormatter.GetPlotValue(sensor, sensorValue.Value, temperatureUnit);
                 if (displayedValue is not { } pointValue || !double.IsFinite(pointValue))
                     continue;
 
                 points.Add(new PlotPointViewModel(sensorValue.Time, pointValue));
+                if (!latestHistoryTimestamp.HasValue || sensorValue.Time > latestHistoryTimestamp.Value)
+                    latestHistoryTimestamp = sensorValue.Time;
             }
-
-            DateTime? latestHistoryTimestamp = points.Count > 0 ? points[^1].Timestamp : null;
             foreach (PlotPointViewModel existingPoint in series.Points)
             {
                 if (now - existingPoint.Timestamp > MaximumSyntheticPlotPointRetention)

@@ -18,6 +18,10 @@ public sealed class Logger : ILogger
     private readonly IComputer _computer;
     private readonly TimeProvider _timeProvider;
     private readonly string _baseDirectory;
+    // Guards the _sensors/_identifiers pair: the timer thread reassigns them on rotation while background
+    // hardware-discovery threads read/write them via SensorAdded/SensorRemoved (Computer.HardwareAdded now fires
+    // off the caller thread once any deferred-detection flag is active).
+    private readonly object _sync = new();
     private DateTime _day = DateTime.MinValue;
     private string _fileName = "";
     private string[]? _identifiers;
@@ -76,21 +80,28 @@ public sealed class Logger : ILogger
                 break;
         }
 
+        // Snapshot the sensor array under the lock so a concurrent SensorAdded/SensorRemoved, or a rotation that swaps
+        // in a different-length array, on a discovery thread cannot tear the read below. Element reads stay safe: a
+        // reference write to a slot is atomic, so each read yields either a sensor or null.
+        ISensor?[]? sensors;
+        lock (_sync)
+            sensors = _sensors;
+
         try
         {
             using StreamWriter writer = new(new FileStream(_fileName, FileMode.Append, FileAccess.Write, FileShare.ReadWrite));
             writer.Write(now.ToString("G", CultureInfo.InvariantCulture));
             writer.Write(",");
 
-            if (_sensors != null)
+            if (sensors != null)
             {
-                for (int i = 0; i < _sensors.Length; i++)
+                for (int i = 0; i < sensors.Length; i++)
                 {
-                    float? value = _sensors[i]?.Value;
+                    float? value = sensors[i]?.Value;
                     if (value.HasValue)
                         writer.Write(value.Value.ToString("R", CultureInfo.InvariantCulture));
 
-                    writer.Write(i < _sensors.Length - 1 ? "," : Environment.NewLine);
+                    writer.Write(i < sensors.Length - 1 ? "," : Environment.NewLine);
                 }
             }
         }
@@ -112,12 +123,21 @@ public sealed class Logger : ILogger
         SensorVisitor visitor = new(sensor => sensors.Add(sensor));
         visitor.VisitComputer(_computer);
 
-        _sensors = sensors.Cast<ISensor?>().ToArray();
-        _identifiers = sensors.Select(sensor => sensor.Identifier.ToString()).ToArray();
+        ISensor?[] sensorArray = sensors.Cast<ISensor?>().ToArray();
+        string[] identifiers = sensors.Select(sensor => sensor.Identifier.ToString()).ToArray();
+
+        // Publish the paired arrays together under the lock so a concurrent SensorAdded/SensorRemoved never observes
+        // mismatched lengths. VisitComputer and the file write run outside the lock to avoid coupling with Computer's
+        // own locks.
+        lock (_sync)
+        {
+            _sensors = sensorArray;
+            _identifiers = identifiers;
+        }
 
         using StreamWriter writer = new(_fileName, false);
         writer.Write(",");
-        writer.WriteLine(string.Join(",", _identifiers));
+        writer.WriteLine(string.Join(",", identifiers));
         writer.Write("Time,");
         writer.WriteLine(string.Join(",", sensors.Select(sensor => $"\"{sensor.Name}\"")));
     }
@@ -127,6 +147,7 @@ public sealed class Logger : ILogger
         if (!File.Exists(_fileName))
             return false;
 
+        string[] identifiers;
         try
         {
             using StreamReader reader = new(_fileName);
@@ -134,30 +155,35 @@ public sealed class Logger : ILogger
             if (string.IsNullOrEmpty(line))
                 return false;
 
-            _identifiers = line.Split(',').Skip(1).ToArray();
+            identifiers = line.Split(',').Skip(1).ToArray();
         }
         catch
         {
-            _identifiers = null;
             return false;
         }
 
-        if (_identifiers.Length == 0)
-        {
-            _identifiers = null;
+        if (identifiers.Length == 0)
             return false;
-        }
 
-        _sensors = new ISensor?[_identifiers.Length];
+        // Build into local arrays, then publish the pair together under the lock, so a discovery thread reading
+        // _sensors/_identifiers never observes a half-populated or length-mismatched pair.
+        ISensor?[] sensors = new ISensor?[identifiers.Length];
         SensorVisitor visitor = new(sensor =>
         {
-            for (int i = 0; i < _identifiers.Length; i++)
+            for (int i = 0; i < identifiers.Length; i++)
             {
-                if (sensor.Identifier.ToString() == _identifiers[i])
-                    _sensors[i] = sensor;
+                if (sensor.Identifier.ToString() == identifiers[i])
+                    sensors[i] = sensor;
             }
         });
         visitor.VisitComputer(_computer);
+
+        lock (_sync)
+        {
+            _identifiers = identifiers;
+            _sensors = sensors;
+        }
+
         return true;
     }
 
@@ -187,25 +213,32 @@ public sealed class Logger : ILogger
 
     private void SensorAdded(ISensor sensor)
     {
-        if (_sensors == null || _identifiers == null)
-            return;
-
-        for (int i = 0; i < _sensors.Length; i++)
+        lock (_sync)
         {
-            if (sensor.Identifier.ToString() == _identifiers[i])
-                _sensors[i] = sensor;
+            if (_sensors == null || _identifiers == null)
+                return;
+
+            // _sensors and _identifiers are always published together with equal lengths, so indexing both is safe.
+            for (int i = 0; i < _sensors.Length; i++)
+            {
+                if (sensor.Identifier.ToString() == _identifiers[i])
+                    _sensors[i] = sensor;
+            }
         }
     }
 
     private void SensorRemoved(ISensor sensor)
     {
-        if (_sensors == null)
-            return;
-
-        for (int i = 0; i < _sensors.Length; i++)
+        lock (_sync)
         {
-            if (sensor == _sensors[i])
-                _sensors[i] = null;
+            if (_sensors == null)
+                return;
+
+            for (int i = 0; i < _sensors.Length; i++)
+            {
+                if (sensor == _sensors[i])
+                    _sensors[i] = null;
+            }
         }
     }
 }

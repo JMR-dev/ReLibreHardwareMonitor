@@ -158,8 +158,17 @@ public sealed class TrayIconService : IDisposable
 
     private void Update(SensorTrayIcon icon)
     {
+        string renderKey = _iconRenderer.GetRenderKey(icon.Sensor);
+        if (icon.IconHandle != IntPtr.Zero && renderKey == icon.LastRenderKey)
+        {
+            // The icon pixels are unchanged; refresh only the (cheap) tooltip and skip the GDI re-render + handle churn.
+            ModifyNotifyIcon(icon.Id, icon.IconHandle, GetSensorToolTip(icon.Sensor));
+            return;
+        }
+
         IntPtr previousIcon = icon.IconHandle;
         icon.IconHandle = _iconRenderer.CreateIcon(icon.Sensor);
+        icon.LastRenderKey = renderKey;
         ModifyNotifyIcon(icon.Id, icon.IconHandle, GetSensorToolTip(icon.Sensor));
         if (previousIcon != IntPtr.Zero)
             DestroyIcon(previousIcon);
@@ -373,5 +382,8 @@ public sealed class TrayIconService : IDisposable
         public IntPtr IconHandle { get; set; }
 
         public ISensor Sensor { get; set; } = sensor;
+
+        /// <summary>Key of the pixels currently rendered into <see cref="IconHandle" />, used to skip redundant re-renders.</summary>
+        public string? LastRenderKey { get; set; }
     }
 }

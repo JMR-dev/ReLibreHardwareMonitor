@@ -71,6 +71,11 @@ public class Computer : IComputer
     private TaskCompletionSource<object> _deferredGroupCompletionSource = CreateCompletedTaskCompletionSource();
     private List<Task> _deferredGroupTasks = [];
 
+    // Serializes the Open/OpenAsync/Close/Reset lifecycle so an asynchronous open cannot interleave with teardown
+    // (which would let a background hardware probe outlive OpCode.Close()/Mutexes.Close()) and so two concurrent
+    // opens cannot double-initialize. Also serializes every access to _deferredGroupCancellationTokenSource.
+    private readonly object _openLock = new();
+
     /// <summary>
     /// Creates a new <see cref="IComputer" /> instance with basic initial <see cref="Settings" />.
     /// </summary>
@@ -480,6 +485,7 @@ public class Computer : IComputer
             return false;
 
         bool added = false;
+        IHardware[] initialHardware = null;
         lock (_lock)
         {
             if (!cancellationToken.IsCancellationRequested && (isEnabled == null || isEnabled()) && !_groups.Contains(group))
@@ -492,16 +498,28 @@ public class Computer : IComputer
                     hardwareChanged.HardwareRemoved += HardwareRemovedEvent;
                 }
 
-                TrackGroupHardwareDiscoveryTask(group);
+                // Snapshot the hardware present at subscription time. Capturing it here -- before any background
+                // discovery is started below -- guarantees hardware discovered later is announced exactly once, via the
+                // event we just subscribed: never missed (subscription precedes discovery) and never also replayed from
+                // this snapshot (a duplicate).
+                initialHardware = [.. group.Hardware];
                 added = true;
             }
         }
 
         if (added)
         {
+            // Start background discovery only now that the subscription and snapshot are in place, then track its task
+            // so the run's completion (HardwareDiscoveryTask) waits for it.
+            if (group is IHardwareDiscoveryTask discoveryTask)
+            {
+                discoveryTask.StartHardwareDiscovery();
+                TrackGroupHardwareDiscoveryTask(group);
+            }
+
             if (HardwareAdded != null)
             {
-                foreach (IHardware hardware in group.Hardware)
+                foreach (IHardware hardware in initialHardware)
                     HardwareAdded(hardware);
             }
         }
@@ -563,9 +581,6 @@ public class Computer : IComputer
     /// </summary>
     public void Open()
     {
-        if (_open)
-            return;
-
         OpenInternal(CancellationToken.None);
     }
 
@@ -588,17 +603,30 @@ public class Computer : IComputer
     /// <returns>A task that completes once all enabled hardware groups have been discovered.</returns>
     public Task OpenAsync(CancellationToken cancellationToken)
     {
-        if (_open)
-            return Task.CompletedTask;
+        lock (_openLock)
+        {
+            if (_open)
+                return Task.CompletedTask;
+        }
 
         return Task.Run(() => OpenInternal(cancellationToken), cancellationToken);
     }
 
     private void OpenInternal(CancellationToken cancellationToken)
     {
-        if (_open)
-            return;
+        // Hold _openLock for the whole open so a concurrent Close()/Reset() cannot run mid-initialization and so a
+        // second Open()/OpenAsync() observes _open atomically instead of double-initializing OpCode/Mutexes/groups.
+        lock (_openLock)
+        {
+            if (_open)
+                return;
 
+            OpenCore(cancellationToken);
+        }
+    }
+
+    private void OpenCore(CancellationToken cancellationToken)
+    {
         StartDeferredGroupRun();
 
         try
@@ -773,16 +801,9 @@ public class Computer : IComputer
 
     private void AddDeferredGroup(Func<IGroup> createGroup, Func<bool> isEnabled)
     {
-        CancellationTokenSource cancellationTokenSource = _deferredGroupCancellationTokenSource;
-        if (cancellationTokenSource == null)
-        {
-            if (isEnabled())
-                Add(createGroup());
-
-            return;
-        }
-
-        CancellationToken cancellationToken = cancellationTokenSource.Token;
+        // StartDeferredGroupRun (run under _openLock before AddGroups) always assigns the token source, so the deferred
+        // path is the only reachable one here.
+        CancellationToken cancellationToken = _deferredGroupCancellationTokenSource.Token;
         Task task = Task.Run(() =>
         {
             IGroup group = null;
@@ -808,23 +829,7 @@ public class Computer : IComputer
 
     private void AddDeferredGroups(Func<bool> isEnabled, params Func<IGroup>[] createGroups)
     {
-        CancellationTokenSource cancellationTokenSource = _deferredGroupCancellationTokenSource;
-        if (cancellationTokenSource == null)
-        {
-            foreach (Func<IGroup> createGroup in createGroups)
-            {
-                if (!isEnabled())
-                    return;
-
-                IGroup group = createGroup();
-                if (group != null)
-                    Add(group);
-            }
-
-            return;
-        }
-
-        CancellationToken cancellationToken = cancellationTokenSource.Token;
+        CancellationToken cancellationToken = _deferredGroupCancellationTokenSource.Token;
         Task task = Task.Run(() =>
         {
             foreach (Func<IGroup> createGroup in createGroups)
@@ -858,19 +863,7 @@ public class Computer : IComputer
 
     private bool ShouldDeferDetection(string settingName, string environmentVariable)
     {
-        string environmentValue = Environment.GetEnvironmentVariable(environmentVariable);
-        if (!string.IsNullOrWhiteSpace(environmentValue))
-            return IsTruthy(environmentValue);
-
-        return IsTruthy(_settings.GetValue(settingName, "false"));
-    }
-
-    private static bool IsTruthy(string value)
-    {
-        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("true", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("on", StringComparison.OrdinalIgnoreCase);
+        return SettingsParsing.ShouldDefer(_settings, settingName, environmentVariable);
     }
 
     private void StartDeferredGroupRun()
@@ -890,10 +883,12 @@ public class Computer : IComputer
         CancellationTokenSource cancellationTokenSource = _deferredGroupCancellationTokenSource;
         _deferredGroupCancellationTokenSource = null;
         TaskCompletionSource<object> completionSource;
+        Task[] tasks;
 
         lock (_deferredGroupLock)
         {
             completionSource = _deferredGroupCompletionSource;
+            tasks = _deferredGroupTasks.ToArray();
             _deferredGroupTasks = [];
         }
 
@@ -904,8 +899,33 @@ public class Computer : IComputer
         }
 
         cancellationTokenSource.Cancel();
-        cancellationTokenSource.Dispose();
+
+        // Mark the run cancelled before draining so the Task.WhenAll continuation in CompleteDeferredGroupRunWhenRegistered
+        // cannot win the race and raise HardwareDiscoveryCompleted during teardown.
         completionSource.TrySetCanceled();
+
+        // Wait for in-flight deferred construction to unwind before disposing the token source or returning to a caller
+        // that is about to tear down native state. A deferred task only checks the token before createGroup() and again
+        // in AddCore, so the group constructor (which probes hardware via OpCode/native APIs) always runs to completion;
+        // draining here keeps it from racing OpCode.Close()/Mutexes.Close() in Close() or a fresh run from Reset()/Open().
+        WaitForDeferredGroupTasks(tasks);
+
+        cancellationTokenSource.Dispose();
+    }
+
+    private static void WaitForDeferredGroupTasks(Task[] tasks)
+    {
+        if (tasks.Length == 0)
+            return;
+
+        try
+        {
+            Task.WaitAll(tasks);
+        }
+        catch (AggregateException)
+        {
+            // Deferred discovery tasks observe and log their own exceptions; nothing actionable surfaces here.
+        }
     }
 
     private static TaskCompletionSource<object> CreateCompletedTaskCompletionSource()
@@ -933,20 +953,37 @@ public class Computer : IComputer
     private void CompleteDeferredGroupRunWhenRegistered()
     {
         TaskCompletionSource<object> completionSource;
+        lock (_deferredGroupLock)
+            completionSource = _deferredGroupCompletionSource;
+
+        WaitForRegisteredTasksThenComplete(completionSource, 0);
+    }
+
+    /// <summary>
+    /// Completes the run once every tracked deferred task has finished. A deferred group that is itself an
+    /// <see cref="IHardwareDiscoveryTask" /> registers its nested task from a background thread, so more tasks can
+    /// appear after the first <c>Task.WhenAll</c>; this re-arms on the larger set (comparing against the count
+    /// already awaited) until no new task has been registered, so completion never fires while discovery is still running.
+    /// </summary>
+    private void WaitForRegisteredTasksThenComplete(TaskCompletionSource<object> completionSource, int alreadyAwaited)
+    {
         Task[] tasks;
         lock (_deferredGroupLock)
         {
-            completionSource = _deferredGroupCompletionSource;
+            // A superseding run (Reset()/Close() started a new one) owns completion now; stop.
+            if (!ReferenceEquals(completionSource, _deferredGroupCompletionSource))
+                return;
+
             tasks = _deferredGroupTasks.ToArray();
         }
 
-        if (tasks.Length == 0)
+        if (tasks.Length <= alreadyAwaited)
         {
             CompleteDeferredGroupRun(completionSource);
             return;
         }
 
-        _ = Task.WhenAll(tasks).ContinueWith(_ => CompleteDeferredGroupRun(completionSource),
+        _ = Task.WhenAll(tasks).ContinueWith(_ => WaitForRegisteredTasksThenComplete(completionSource, tasks.Length),
                                              CancellationToken.None,
                                              TaskContinuationOptions.ExecuteSynchronously,
                                              TaskScheduler.Default);
@@ -1045,25 +1082,31 @@ public class Computer : IComputer
     /// </summary>
     public void Close()
     {
-        if (!_open)
-            return;
-
-        CancelDeferredGroupRun();
-
-        lock (_lock)
+        lock (_openLock)
         {
-            while (_groups.Count > 0)
+            if (!_open)
+                return;
+
+            // Cancel and DRAIN deferred discovery before tearing down native state: a deferred group constructor runs
+            // to completion even after cancellation, so without waiting here a background probe could run concurrently
+            // with OpCode.Close()/Mutexes.Close() and fault in native code.
+            CancelDeferredGroupRun();
+
+            lock (_lock)
             {
-                IGroup group = _groups[_groups.Count - 1];
-                Remove(group);
+                while (_groups.Count > 0)
+                {
+                    IGroup group = _groups[_groups.Count - 1];
+                    Remove(group);
+                }
             }
+
+            OpCode.Close();
+            Mutexes.Close();
+
+            _smbios = null;
+            _open = false;
         }
-
-        OpCode.Close();
-        Mutexes.Close();
-
-        _smbios = null;
-        _open = false;
     }
 
     /// <summary>
@@ -1071,13 +1114,16 @@ public class Computer : IComputer
     /// </summary>
     public void Reset()
     {
-        if (!_open)
-            return;
+        lock (_openLock)
+        {
+            if (!_open)
+                return;
 
-        StartDeferredGroupRun();
-        RemoveGroups();
-        AddGroups(null, CancellationToken.None);
-        CompleteDeferredGroupRunWhenRegistered();
+            StartDeferredGroupRun();
+            RemoveGroups();
+            AddGroups(null, CancellationToken.None);
+            CompleteDeferredGroupRunWhenRegistered();
+        }
     }
 
     private void RemoveGroups()

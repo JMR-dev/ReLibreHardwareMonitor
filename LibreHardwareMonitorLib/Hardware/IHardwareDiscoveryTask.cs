@@ -8,5 +8,13 @@ namespace LibreHardwareMonitor.Hardware;
 
 internal interface IHardwareDiscoveryTask
 {
+    /// <summary>
+    /// Starts the group's background hardware discovery. <see cref="Computer" /> calls this only after it has
+    /// subscribed to the group's <see cref="IHardwareChanged.HardwareAdded" /> event and snapshotted the
+    /// already-present hardware, so each discovered piece of hardware is announced exactly once: never before the
+    /// subscription exists (which would drop the notification) and never also via the initial snapshot (a duplicate).
+    /// </summary>
+    void StartHardwareDiscovery();
+
     Task HardwareDiscoveryTask { get; }
 }

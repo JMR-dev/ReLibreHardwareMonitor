@@ -94,6 +94,16 @@ internal sealed class SensorIconRenderer
         }
     }
 
+    /// <summary>
+    /// Returns a key identifying the pixels <see cref="CreateIcon" /> would produce (the drawn text and the background
+    /// color). When it is unchanged the previously created icon can be reused instead of re-rendering a new GDI icon.
+    /// </summary>
+    public string GetRenderKey(ISensor sensor)
+    {
+        WinUIColor color = GetSensorTrayColor(sensor);
+        return $"{GetSensorIconText(sensor)}|{color.A:X2}{color.R:X2}{color.G:X2}{color.B:X2}";
+    }
+
     private WinUIColor GetSensorTrayColor(ISensor sensor)
     {
         WinUIColor defaultColor = sensor.SensorType is SensorType.Load or SensorType.Control or SensorType.Level

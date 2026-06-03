@@ -20,12 +20,15 @@ public class SystemTray : IDisposable
     private readonly List<SensorNotifyIcon> _sensorList = new List<SensorNotifyIcon>();
     private bool _mainIconEnabled;
     private readonly NotifyIconAdv _mainIcon;
+    private readonly System.Threading.SynchronizationContext _uiSyncContext;
 
     public SystemTray(IComputer computer, PersistentSettings settings, UnitManager unitManager)
     {
         _computer = computer;
         _settings = settings;
         _unitManager = unitManager;
+        // Captured on the UI thread so the now-possibly-background HardwareAdded/HardwareRemoved re-dispatch here.
+        _uiSyncContext = System.Threading.SynchronizationContext.Current;
         computer.HardwareAdded += HardwareAdded;
         computer.HardwareRemoved += HardwareRemoved;
 
@@ -56,6 +59,12 @@ public class SystemTray : IDisposable
 
     private void HardwareRemoved(IHardware hardware)
     {
+        if (_uiSyncContext != null && System.Threading.SynchronizationContext.Current != _uiSyncContext)
+        {
+            _uiSyncContext.Post(_ => HardwareRemoved(hardware), null);
+            return;
+        }
+
         hardware.SensorAdded -= SensorAdded;
         hardware.SensorRemoved -= SensorRemoved;
 
@@ -68,6 +77,12 @@ public class SystemTray : IDisposable
 
     private void HardwareAdded(IHardware hardware)
     {
+        if (_uiSyncContext != null && System.Threading.SynchronizationContext.Current != _uiSyncContext)
+        {
+            _uiSyncContext.Post(_ => HardwareAdded(hardware), null);
+            return;
+        }
+
         foreach (ISensor sensor in hardware.Sensors)
             SensorAdded(sensor);
 

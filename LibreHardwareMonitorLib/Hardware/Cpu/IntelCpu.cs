@@ -587,19 +587,7 @@ internal sealed class IntelCpu : GenericCpu
 
     private static bool ShouldDeferInitialUpdate(ISettings settings)
     {
-        string environmentValue = Environment.GetEnvironmentVariable(DeferInitialUpdateEnvironmentVariable);
-        if (!string.IsNullOrWhiteSpace(environmentValue))
-            return IsTruthy(environmentValue);
-
-        return IsTruthy(settings.GetValue(DeferInitialUpdateSetting, "false"));
-    }
-
-    private static bool IsTruthy(string value)
-    {
-        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("true", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("on", StringComparison.OrdinalIgnoreCase);
+        return SettingsParsing.ShouldDefer(settings, DeferInitialUpdateSetting, DeferInitialUpdateEnvironmentVariable);
     }
 
     public override string GetReport()
