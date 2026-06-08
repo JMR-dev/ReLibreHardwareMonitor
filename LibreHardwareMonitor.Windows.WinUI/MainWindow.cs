@@ -132,6 +132,8 @@ public sealed partial class MainWindow : Window
                     _trayIconService.Update();
                     SyncGadgetSensors();
                     ViewModel.RefreshPlotSeries();
+                    _columnMeasurer.InvalidateAll();
+                    QueueSensorColumnWidthUpdate();
                 }
 
                 if (args.PropertyName == nameof(ViewModel.ShowHiddenSensors))
@@ -520,7 +522,7 @@ public sealed partial class MainWindow : Window
         SensorTree.RootNodes.Clear();
         foreach (SensorTreeItemViewModel item in ViewModel.RootItems)
         {
-            TreeViewNode? node = CreateTreeNode(item);
+            TreeViewNode? node = CreateTreeNode(item, 0);
             if (node != null)
                 SensorTree.RootNodes.Add(node);
         }
@@ -544,20 +546,20 @@ public sealed partial class MainWindow : Window
             CompleteStartupTraceIfReady();
     }
 
-    private TreeViewNode? CreateTreeNode(SensorTreeItemViewModel item)
+    private TreeViewNode? CreateTreeNode(SensorTreeItemViewModel item, int depth)
     {
         if (item.RowVisibility == Visibility.Collapsed)
             return null;
 
         TreeViewNode node = new()
         {
-            Content = CreateSensorRow(item),
+            Content = CreateSensorRow(item, depth),
             IsExpanded = item.IsExpanded
         };
 
         foreach (SensorTreeItemViewModel child in item.Children)
         {
-            TreeViewNode? childNode = CreateTreeNode(child);
+            TreeViewNode? childNode = CreateTreeNode(child, depth + 1);
             if (childNode != null)
                 node.Children.Add(childNode);
         }
@@ -565,9 +567,9 @@ public sealed partial class MainWindow : Window
         return node;
     }
 
-    private FrameworkElement CreateSensorRow(SensorTreeItemViewModel item)
+    private FrameworkElement CreateSensorRow(SensorTreeItemViewModel item, int depth)
     {
-        Grid row = _columnMeasurer.CreateRowGrid();
+        Grid row = _columnMeasurer.CreateRowGrid(item, depth);
         row.DataContext = item;
         row.Padding = new Thickness(0, 3, 0, 3);
 
@@ -610,7 +612,11 @@ public sealed partial class MainWindow : Window
         if (item.Sensor?.Parameters.Count > 0)
             flyout.Items.Add(CreateMenuItem("Parameters...", async (_, _) => await _dialogService.ShowParametersAsync(item)));
 
-        MenuFlyoutItem rename = CreateMenuItem("Rename", async (_, _) => await _dialogService.RenameAsync(item));
+        MenuFlyoutItem rename = CreateMenuItem("Rename", async (_, _) =>
+        {
+            await _dialogService.RenameAsync(item);
+            QueueSensorColumnWidthUpdate();
+        });
         rename.IsEnabled = item.CanRename;
         flyout.Items.Add(rename);
 

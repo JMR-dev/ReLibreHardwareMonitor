@@ -3,7 +3,7 @@
 // Copyright (C) LibreHardwareMonitor and Contributors.
 
 using System;
-using System.IO;
+using LibreHardwareMonitor.Hardware;
 
 namespace LibreHardwareMonitor.Windows.WinUI.Services.Tracing;
 
@@ -26,31 +26,12 @@ internal static class StartupTracer
     {
         string? configuredPath = Environment.GetEnvironmentVariable(PathEnvironmentVariable);
 
-        string fileName = $"LibreHardwareMonitor.WinUIStartupTiming-{DateTime.Now:yyyyMMdd-HHmmss-fff}.log";
-        if (string.IsNullOrWhiteSpace(configuredPath))
-            return Path.Combine(AppContext.BaseDirectory, fileName);
-
-        if (configuredPath.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal)
-            || configuredPath.EndsWith(Path.AltDirectorySeparatorChar.ToString(), StringComparison.Ordinal)
-            || Directory.Exists(configuredPath))
-        {
-            return Path.Combine(configuredPath, fileName);
-        }
-
-        return configuredPath;
+        return StartupTraceLogSupport.GetLogFileName("LibreHardwareMonitor.WinUIStartupTiming", configuredPath);
     }
 
     private static bool IsEnabled()
     {
         string environmentValue = Environment.GetEnvironmentVariable(EnabledEnvironmentVariable) ?? "";
-        return IsTruthy(environmentValue);
-    }
-
-    private static bool IsTruthy(string value)
-    {
-        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("true", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
-               || value.Equals("on", StringComparison.OrdinalIgnoreCase);
+        return SettingsParsing.IsTruthy(environmentValue);
     }
 }

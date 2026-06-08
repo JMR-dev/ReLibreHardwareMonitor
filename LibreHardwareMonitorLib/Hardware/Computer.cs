@@ -39,17 +39,11 @@ namespace LibreHardwareMonitor.Hardware;
 public class Computer : IComputer
 {
     private const string DeferNetworkDetectionEnvironmentVariable = "LHM_NETWORK_DEFER_DETECTION";
-    private const string DeferNetworkDetectionSetting = "network.deferDetection";
     private const string DeferNvidiaDetectionEnvironmentVariable = "LHM_NVIDIA_DEFER_DETECTION";
-    private const string DeferNvidiaDetectionSetting = "nvidia.deferDetection";
     private const string DeferStorageDetectionEnvironmentVariable = "LHM_STORAGE_DEFER_DETECTION";
-    private const string DeferStorageDetectionSetting = "storage.deferDetection";
     private const string DeferIntelGpuDetectionEnvironmentVariable = "LHM_INTEL_GPU_DEFER_DETECTION";
-    private const string DeferIntelGpuDetectionSetting = "gpu.deferIntelDetection";
     private const string DeferControllerDetectionEnvironmentVariable = "LHM_CONTROLLER_DEFER_DETECTION";
-    private const string DeferControllerDetectionSetting = "controller.deferDetection";
     private const string DeferPsuDetectionEnvironmentVariable = "LHM_PSU_DEFER_DETECTION";
-    private const string DeferPsuDetectionSetting = "psu.deferDetection";
 
     private readonly object _deferredGroupLock = new();
     private readonly List<IGroup> _groups = new();
@@ -99,8 +93,6 @@ public class Computer : IComputer
 
     /// <inheritdoc />
     public event HardwareEventHandler HardwareRemoved;
-
-    public event EventHandler HardwareDiscoveryCompleted;
 
     public Task HardwareDiscoveryTask
     {
@@ -679,7 +671,7 @@ public class Computer : IComputer
                              "NvidiaGroup",
                              () => new NvidiaGroup(_settings),
                              () => _gpuEnabled,
-                             DeferNvidiaDetectionSetting,
+                             HardwareSettingsKeys.NvidiaDeferDetection,
                              DeferNvidiaDetectionEnvironmentVariable);
 
             // Intel GPU detection is the most expensive GPU probe but only depends on the (already-created) CPU group,
@@ -689,7 +681,7 @@ public class Computer : IComputer
                                  "IntelGpuGroup",
                                  () => new IntelGpuGroup(GetIntelCpus(), _settings),
                                  () => _gpuEnabled && _cpuEnabled,
-                                 DeferIntelGpuDetectionSetting,
+                                 HardwareSettingsKeys.IntelGpuDeferDetection,
                                  DeferIntelGpuDetectionEnvironmentVariable);
         }
 
@@ -702,7 +694,7 @@ public class Computer : IComputer
         {
             // Controllers probe USB/serial buses (with worst-case timeouts), so the whole block can be deferred to a
             // single background task. It stays sequential there to avoid concurrent serial-port/USB scans.
-            if (ShouldDeferDetection(DeferControllerDetectionSetting, DeferControllerDetectionEnvironmentVariable))
+            if (ShouldDeferDetection(HardwareSettingsKeys.ControllerDeferDetection, DeferControllerDetectionEnvironmentVariable))
             {
                 startupTrace?.Skip("ControllerGroups", "Deferred to background.");
                 AddDeferredGroups(() => _controllerEnabled,
@@ -734,7 +726,7 @@ public class Computer : IComputer
                              "StorageGroup",
                              () => new StorageGroup(_settings),
                              () => _storageEnabled,
-                             DeferStorageDetectionSetting,
+                             HardwareSettingsKeys.StorageDeferDetection,
                              DeferStorageDetectionEnvironmentVariable);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -743,7 +735,7 @@ public class Computer : IComputer
                              "NetworkGroup",
                              () => new NetworkGroup(_settings),
                              () => _networkEnabled,
-                             DeferNetworkDetectionSetting,
+                             HardwareSettingsKeys.NetworkDeferDetection,
                              DeferNetworkDetectionEnvironmentVariable);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -751,7 +743,7 @@ public class Computer : IComputer
         {
             // PSU detection probes HID devices, so it contends with the deferred controllers' USB/HID scans. Defer it
             // to a background task too, keeping all HID/USB probing off the critical path.
-            if (ShouldDeferDetection(DeferPsuDetectionSetting, DeferPsuDetectionEnvironmentVariable))
+            if (ShouldDeferDetection(HardwareSettingsKeys.PsuDeferDetection, DeferPsuDetectionEnvironmentVariable))
             {
                 startupTrace?.Skip("PsuGroups", "Deferred to background.");
                 AddDeferredGroups(() => _psuEnabled,
@@ -889,7 +881,7 @@ public class Computer : IComputer
         cancellationTokenSource.Cancel();
 
         // Mark the run cancelled before draining so the Task.WhenAll continuation in CompleteDeferredGroupRunWhenRegistered
-        // cannot win the race and raise HardwareDiscoveryCompleted during teardown.
+        // cannot win the race and complete HardwareDiscoveryTask during teardown.
         completionSource.TrySetCanceled();
 
         // Wait for in-flight deferred construction to unwind before disposing the token source or returning to a caller
@@ -925,17 +917,13 @@ public class Computer : IComputer
 
     private void CompleteDeferredGroupRun(TaskCompletionSource<object> completionSource)
     {
-        bool completed;
         lock (_deferredGroupLock)
         {
             if (!ReferenceEquals(completionSource, _deferredGroupCompletionSource))
                 return;
 
-            completed = completionSource.TrySetResult(null);
+            completionSource.TrySetResult(null);
         }
-
-        if (completed)
-            HardwareDiscoveryCompleted?.Invoke(this, EventArgs.Empty);
     }
 
     private void CompleteDeferredGroupRunWhenRegistered()

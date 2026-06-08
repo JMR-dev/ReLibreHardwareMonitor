@@ -41,6 +41,8 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
         _settings = settings;
     }
 
+    internal event EventHandler<SensorDisplayColumn>? DisplayColumnsChanged;
+
     public ObservableCollection<SensorTreeItemViewModel> Children { get; } = [];
 
     public bool CanHide => Sensor != null;
@@ -151,6 +153,9 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
         }
         set
         {
+            if (Text == value)
+                return;
+
             if (Sensor != null)
                 Sensor.Name = value;
             else if (Hardware != null)
@@ -159,6 +164,7 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
                 _text = value;
 
             OnPropertyChanged();
+            OnDisplayColumnsChanged(SensorDisplayColumn.Sensor);
         }
     }
 
@@ -267,11 +273,14 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
         // actually changed. Unconditionally notifying all four for every item on every update tick made the native
         // binding engine re-marshal unchanged values across the boundary continuously — most sensors don't change each
         // tick, so this cuts the per-tick interop churn (and its retained wrappers) by a large factor.
+        SensorDisplayColumn changedColumns = SensorDisplayColumn.None;
+
         string value = Value;
         if (value != _lastValue)
         {
             _lastValue = value;
             OnPropertyChanged(nameof(Value));
+            changedColumns |= SensorDisplayColumn.Value;
         }
 
         string min = Min;
@@ -279,6 +288,7 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
         {
             _lastMin = min;
             OnPropertyChanged(nameof(Min));
+            changedColumns |= SensorDisplayColumn.Min;
         }
 
         string max = Max;
@@ -286,6 +296,7 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
         {
             _lastMax = max;
             OnPropertyChanged(nameof(Max));
+            changedColumns |= SensorDisplayColumn.Max;
         }
 
         string toolTip = ToolTip;
@@ -294,6 +305,8 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
             _lastToolTip = toolTip;
             OnPropertyChanged(nameof(ToolTip));
         }
+
+        OnDisplayColumnsChanged(changedColumns);
 
         foreach (SensorTreeItemViewModel child in Children)
             child.RefreshValues();
@@ -374,6 +387,12 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
             changed |= child.SetTemperatureUnitCore(temperatureUnit);
 
         return changed;
+    }
+
+    private void OnDisplayColumnsChanged(SensorDisplayColumn columns)
+    {
+        if (columns != SensorDisplayColumn.None)
+            DisplayColumnsChanged?.Invoke(this, columns);
     }
 
     private void UpdateVisibilityState()

@@ -3,6 +3,9 @@
 // Copyright (C) LibreHardwareMonitor and Contributors.
 
 using System;
+using System.IO;
+using System.Reflection;
+using LibreHardwareMonitor.Hardware;
 using LibreHardwareMonitor.Windows.WinUI.Services;
 using Xunit;
 
@@ -14,6 +17,31 @@ namespace LibreHardwareMonitor.Windows.WinUI.Tests.Services;
 // once it is extracted into its own testable unit during Phase 4.
 public class HardwareMonitorServiceTests
 {
+    [Fact]
+    public void Constructor_AppliesDeferredDetectionDefaultsUsingSharedHardwareKeys()
+    {
+        AppSettings settings = CreateBlankSettings();
+        using var service = new HardwareMonitorService(settings);
+        string[] deferredDefaults =
+        {
+            HardwareSettingsKeys.MemoryDeferDimmDetection,
+            HardwareSettingsKeys.CpuDeferInitialUpdate,
+            HardwareSettingsKeys.CpuDeferTscEstimation,
+            HardwareSettingsKeys.NvidiaDeferDetection,
+            HardwareSettingsKeys.StorageDeferDetection,
+            HardwareSettingsKeys.NetworkDeferDetection,
+            HardwareSettingsKeys.IntelGpuDeferDetection,
+            HardwareSettingsKeys.ControllerDeferDetection,
+            HardwareSettingsKeys.PsuDeferDetection,
+        };
+
+        foreach (string key in deferredDefaults)
+        {
+            Assert.True(settings.Contains(key), $"Missing default for {key}.");
+            Assert.True(settings.GetValue(key, false), $"Expected {key} to default to true.");
+        }
+    }
+
     [Fact]
     public void EnableFlags_WriteExpectedSettingKeysAndComputerFlags()
     {
@@ -84,5 +112,12 @@ public class HardwareMonitorServiceTests
         service.RebuildTree(raiseTreeRebuilt: false);
 
         Assert.False(raised);
+    }
+
+    private static AppSettings CreateBlankSettings()
+    {
+        string fileName = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.config");
+        ConstructorInfo? ctor = typeof(AppSettings).GetConstructor(BindingFlags.NonPublic | BindingFlags.Instance, null, new[] { typeof(string) }, null);
+        return (AppSettings)ctor!.Invoke(new object[] { fileName });
     }
 }

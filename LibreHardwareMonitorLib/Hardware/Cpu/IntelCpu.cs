@@ -16,7 +16,6 @@ namespace LibreHardwareMonitor.Hardware.Cpu;
 internal sealed class IntelCpu : GenericCpu
 {
     private const string DeferInitialUpdateEnvironmentVariable = "LHM_CPU_DEFER_INITIAL_UPDATE";
-    private const string DeferInitialUpdateSetting = "cpu.deferInitialUpdate";
 
     private readonly Sensor _busClock;
     private readonly Sensor _coreAvg;
@@ -575,7 +574,7 @@ internal sealed class IntelCpu : GenericCpu
 
     private static bool ShouldDeferInitialUpdate(ISettings settings)
     {
-        return SettingsParsing.ShouldDefer(settings, DeferInitialUpdateSetting, DeferInitialUpdateEnvironmentVariable);
+        return SettingsParsing.ShouldDefer(settings, HardwareSettingsKeys.CpuDeferInitialUpdate, DeferInitialUpdateEnvironmentVariable);
     }
 
     public override string GetReport()

@@ -14,16 +14,6 @@ namespace LibreHardwareMonitor.Windows.WinUI.Services;
 
 public sealed class HardwareMonitorService : IHardwareMonitorService
 {
-    private const string DeferDimmDetectionSetting = "memory.deferDimmDetection";
-    private const string DeferCpuInitialUpdateSetting = "cpu.deferInitialUpdate";
-    private const string DeferTscEstimationSetting = "cpu.deferTscEstimation";
-    private const string DeferNetworkDetectionSetting = "network.deferDetection";
-    private const string DeferNvidiaDetectionSetting = "nvidia.deferDetection";
-    private const string DeferStorageDetectionSetting = "storage.deferDetection";
-    private const string DeferIntelGpuDetectionSetting = "gpu.deferIntelDetection";
-    private const string DeferControllerDetectionSetting = "controller.deferDetection";
-    private const string DeferPsuDetectionSetting = "psu.deferDetection";
-
     private readonly object _updateLock = new();
     private readonly UpdateVisitor _updateVisitor = new();
     private readonly TreeRebuildCoalescer _treeRebuildCoalescer;
@@ -230,15 +220,15 @@ public sealed class HardwareMonitorService : IHardwareMonitorService
 
     private static readonly string[] WinUiDeferredDetectionDefaults =
     {
-        DeferDimmDetectionSetting,
-        DeferCpuInitialUpdateSetting,
-        DeferTscEstimationSetting,
-        DeferNvidiaDetectionSetting,
-        DeferStorageDetectionSetting,
-        DeferNetworkDetectionSetting,
-        DeferIntelGpuDetectionSetting,
-        DeferControllerDetectionSetting,
-        DeferPsuDetectionSetting,
+        HardwareSettingsKeys.MemoryDeferDimmDetection,
+        HardwareSettingsKeys.CpuDeferInitialUpdate,
+        HardwareSettingsKeys.CpuDeferTscEstimation,
+        HardwareSettingsKeys.NvidiaDeferDetection,
+        HardwareSettingsKeys.StorageDeferDetection,
+        HardwareSettingsKeys.NetworkDeferDetection,
+        HardwareSettingsKeys.IntelGpuDeferDetection,
+        HardwareSettingsKeys.ControllerDeferDetection,
+        HardwareSettingsKeys.PsuDeferDetection,
     };
 
     private void ApplyWinUiHardwareDefaults()

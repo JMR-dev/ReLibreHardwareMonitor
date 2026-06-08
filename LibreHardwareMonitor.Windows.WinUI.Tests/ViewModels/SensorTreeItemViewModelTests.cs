@@ -183,4 +183,78 @@ public class SensorTreeItemViewModelTests
 
         Assert.Contains("60.0", sensorVm.Value);
     }
+
+    [Fact]
+    public void RefreshValues_RaisesDisplayColumnChangeOnlyForChangedValue()
+    {
+        float? value = 50f;
+        SensorTreeItemViewModel sensorVm = CreateTemperatureSensorViewModel(() => value, () => 10f, () => 100f);
+        sensorVm.RefreshValues();
+        SensorDisplayColumn changedColumns = SensorDisplayColumn.None;
+        sensorVm.DisplayColumnsChanged += (_, columns) => changedColumns |= columns;
+
+        value = 60f;
+        sensorVm.RefreshValues();
+
+        Assert.Equal(SensorDisplayColumn.Value, changedColumns);
+    }
+
+    [Fact]
+    public void RefreshValues_DoesNotRaiseDisplayColumnChangeWhenFormattedValuesAreUnchanged()
+    {
+        SensorTreeItemViewModel sensorVm = CreateTemperatureSensorViewModel(() => 50f, () => 10f, () => 100f);
+        sensorVm.RefreshValues();
+        SensorDisplayColumn changedColumns = SensorDisplayColumn.None;
+        sensorVm.DisplayColumnsChanged += (_, columns) => changedColumns |= columns;
+
+        sensorVm.RefreshValues();
+
+        Assert.Equal(SensorDisplayColumn.None, changedColumns);
+    }
+
+    [Fact]
+    public void Text_RaisesSensorDisplayColumnChange()
+    {
+        SensorTreeItemViewModel sensorVm = CreateTemperatureSensorViewModel(() => 50f, () => 10f, () => 100f);
+        SensorDisplayColumn changedColumns = SensorDisplayColumn.None;
+        sensorVm.DisplayColumnsChanged += (_, columns) => changedColumns |= columns;
+
+        sensorVm.Text = "Renamed Core";
+
+        Assert.Equal(SensorDisplayColumn.Sensor, changedColumns);
+    }
+
+    [Fact]
+    public void SetTemperatureUnit_RaisesValueMinAndMaxDisplayColumnChanges()
+    {
+        SensorTreeItemViewModel sensorVm = CreateTemperatureSensorViewModel(() => 50f, () => 10f, () => 100f);
+        sensorVm.RefreshValues();
+        SensorDisplayColumn changedColumns = SensorDisplayColumn.None;
+        sensorVm.DisplayColumnsChanged += (_, columns) => changedColumns |= columns;
+
+        sensorVm.SetTemperatureUnit(TemperatureUnit.Fahrenheit);
+
+        Assert.Equal(SensorDisplayColumn.Value | SensorDisplayColumn.Min | SensorDisplayColumn.Max, changedColumns);
+    }
+
+    private SensorTreeItemViewModel CreateTemperatureSensorViewModel(Func<float?> value, Func<float?> min, Func<float?> max)
+    {
+        var mockSensor = new Mock<ISensor>();
+        mockSensor.SetupProperty(s => s.Name, "Core 0");
+        mockSensor.Setup(s => s.Identifier).Returns(new Identifier("cpu", "0", "temperature", "0"));
+        mockSensor.Setup(s => s.SensorType).Returns(SensorType.Temperature);
+        mockSensor.Setup(s => s.Index).Returns(0);
+        mockSensor.Setup(s => s.Value).Returns(value);
+        mockSensor.Setup(s => s.Min).Returns(min);
+        mockSensor.Setup(s => s.Max).Returns(max);
+
+        var mockHardware = new Mock<IHardware>();
+        mockHardware.Setup(s => s.Name).Returns("CPU");
+        mockHardware.Setup(h => h.HardwareType).Returns(HardwareType.Cpu);
+        mockHardware.Setup(h => h.Identifier).Returns(new Identifier("cpu", "0"));
+        mockHardware.Setup(h => h.Sensors).Returns(new[] { mockSensor.Object });
+        mockHardware.Setup(h => h.SubHardware).Returns(Array.Empty<IHardware>());
+
+        return SensorTreeItemViewModel.FromHardware(mockHardware.Object, CreateMockSettings()).Children.First().Children.First();
+    }
 }

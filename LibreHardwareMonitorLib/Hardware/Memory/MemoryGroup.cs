@@ -23,7 +23,6 @@ namespace LibreHardwareMonitor.Hardware.Memory;
 internal class MemoryGroup : IGroup, IHardwareChanged, IHardwareDiscoveryTask
 {
     private const string DeferDimmDetectionEnvironmentVariable = "LHM_MEMORY_DEFER_DIMM_DETECTION";
-    private const string DeferDimmDetectionSetting = "memory.deferDimmDetection";
     private static readonly TimeSpan _retryInterval = TimeSpan.FromSeconds(2.5);
     private static readonly object _lock = new();
     private List<Hardware> _hardware = [];
@@ -246,7 +245,7 @@ internal class MemoryGroup : IGroup, IHardwareChanged, IHardwareDiscoveryTask
 
     private static bool ShouldDeferDimmDetection(ISettings settings)
     {
-        return SettingsParsing.ShouldDefer(settings, DeferDimmDetectionSetting, DeferDimmDetectionEnvironmentVariable);
+        return SettingsParsing.ShouldDefer(settings, HardwareSettingsKeys.MemoryDeferDimmDetection, DeferDimmDetectionEnvironmentVariable);
     }
 
     private void AddDimms(List<SPDAccessor> accessors, ISettings settings, HardwareStartupTrace startupTrace)

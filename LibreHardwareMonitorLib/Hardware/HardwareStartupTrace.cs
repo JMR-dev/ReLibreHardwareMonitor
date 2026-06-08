@@ -130,18 +130,7 @@ internal sealed class HardwareStartupTrace : IDisposable
         if (string.IsNullOrWhiteSpace(configuredPath))
             configuredPath = settings.GetValue(PathSetting, "");
 
-        string fileName = $"LibreHardwareMonitor.HardwareStartupTiming-{DateTime.Now:yyyyMMdd-HHmmss-fff}.log";
-        if (string.IsNullOrWhiteSpace(configuredPath))
-            return Path.Combine(AppContext.BaseDirectory, fileName);
-
-        if (configuredPath.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal)
-            || configuredPath.EndsWith(Path.AltDirectorySeparatorChar.ToString(), StringComparison.Ordinal)
-            || Directory.Exists(configuredPath))
-        {
-            return Path.Combine(configuredPath, fileName);
-        }
-
-        return configuredPath;
+        return StartupTraceLogSupport.GetLogFileName("LibreHardwareMonitor.HardwareStartupTiming", configuredPath);
     }
 
     private static int? GetHardwareCount<T>(T result)
@@ -201,7 +190,7 @@ internal sealed class HardwareStartupTrace : IDisposable
 
         foreach (Entry entry in _entries)
         {
-            builder.Append(EscapeCsv(entry.Phase));
+            builder.Append(StartupTraceLogSupport.EscapeCsv(entry.Phase));
             builder.Append(',');
             builder.Append(entry.Elapsed.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture));
             builder.Append(',');
@@ -209,21 +198,10 @@ internal sealed class HardwareStartupTrace : IDisposable
             builder.Append(',');
             builder.Append(entry.Status);
             builder.Append(',');
-            builder.AppendLine(EscapeCsv(entry.Detail));
+            builder.AppendLine(StartupTraceLogSupport.EscapeCsv(entry.Detail));
         }
 
         return builder.ToString();
-    }
-
-    private static string EscapeCsv(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-            return "";
-
-        if (!value.Contains(",") && !value.Contains("\"") && !value.Contains("\r") && !value.Contains("\n"))
-            return value;
-
-        return "\"" + value.Replace("\"", "\"\"") + "\"";
     }
 
     private sealed class Entry

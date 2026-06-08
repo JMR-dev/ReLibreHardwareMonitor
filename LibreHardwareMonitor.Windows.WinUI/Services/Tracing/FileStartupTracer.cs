@@ -10,6 +10,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using LibreHardwareMonitor.Hardware;
 
 namespace LibreHardwareMonitor.Windows.WinUI.Services.Tracing;
 
@@ -167,17 +168,6 @@ internal sealed class FileStartupTracer : IStartupTracer
         }
     }
 
-    private static string EscapeCsv(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-            return "";
-
-        if (!value.Contains(",") && !value.Contains("\"") && !value.Contains("\r") && !value.Contains("\n"))
-            return value;
-
-        return "\"" + value.Replace("\"", "\"\"") + "\"";
-    }
-
     private static string GetDetail(Func<string>? getDetail)
     {
         if (getDetail == null)
@@ -229,7 +219,7 @@ internal sealed class FileStartupTracer : IStartupTracer
 
         foreach (Entry entry in entries.OrderBy(entry => entry.Start))
         {
-            builder.Append(EscapeCsv(entry.Phase));
+            builder.Append(StartupTraceLogSupport.EscapeCsv(entry.Phase));
             builder.Append(',');
             builder.Append(entry.Start.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture));
             builder.Append(',');
@@ -237,7 +227,7 @@ internal sealed class FileStartupTracer : IStartupTracer
             builder.Append(',');
             builder.Append(entry.Status);
             builder.Append(',');
-            builder.AppendLine(EscapeCsv(entry.Detail));
+            builder.AppendLine(StartupTraceLogSupport.EscapeCsv(entry.Detail));
         }
 
         return builder.ToString();

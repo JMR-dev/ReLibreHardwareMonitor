@@ -18,7 +18,6 @@ namespace LibreHardwareMonitor.Hardware.Cpu;
 public class GenericCpu : Hardware
 {
     private const string DeferTscEstimationEnvironmentVariable = "LHM_CPU_DEFER_TSC_ESTIMATION";
-    private const string DeferTscEstimationSetting = "cpu.deferTscEstimation";
 
     protected readonly int _coreCount;
     protected readonly CpuId[][] _cpuId;
@@ -271,7 +270,7 @@ public class GenericCpu : Hardware
 
     private static bool ShouldDeferTscEstimation(ISettings settings)
     {
-        return SettingsParsing.ShouldDefer(settings, DeferTscEstimationSetting, DeferTscEstimationEnvironmentVariable);
+        return SettingsParsing.ShouldDefer(settings, HardwareSettingsKeys.CpuDeferTscEstimation, DeferTscEstimationEnvironmentVariable);
     }
 
 

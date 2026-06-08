@@ -11,7 +11,7 @@ namespace LibreHardwareMonitor.Hardware;
 /// <see cref="ISettings" /> and environment variables. Keeps the truthy vocabulary and the env-overrides-setting
 /// precedence in one place so the components cannot drift.
 /// </summary>
-internal static class SettingsParsing
+public static class SettingsParsing
 {
     /// <summary>Returns whether <paramref name="value" /> is one of the accepted truthy tokens (1/true/yes/on).</summary>
     public static bool IsTruthy(string value)
