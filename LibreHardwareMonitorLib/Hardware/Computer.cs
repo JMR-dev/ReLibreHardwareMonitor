@@ -629,10 +629,10 @@ public class Computer : IComputer
             cancellationToken.ThrowIfCancellationRequested();
             _smbios = Measure(startupTrace, "SMBios", () => new SMBios());
 
-            if (Software.OperatingSystem.IsWindows8OrGreater)
+            if (!Software.OperatingSystem.IsUnix)
                 Measure(startupTrace, "Mutexes.Open", Mutexes.Open);
             else
-                startupTrace?.Skip("Mutexes.Open", "Operating system is older than Windows 8.");
+                startupTrace?.Skip("Mutexes.Open", "Operating system is not Windows.");
 
             cancellationToken.ThrowIfCancellationRequested();
             Measure(startupTrace, "OpCode.Open", OpCode.Open);

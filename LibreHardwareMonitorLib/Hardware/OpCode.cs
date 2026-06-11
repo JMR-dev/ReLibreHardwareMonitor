@@ -1,4 +1,4 @@
-﻿// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
 // Copyright (C) LibreHardwareMonitor and Contributors.
 // Partial Copyright (C) Michael Möller <mmoeller@openhardwaremonitor.org> and Contributors.
@@ -7,11 +7,7 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
-#if !NETFRAMEWORK
 using Mono.Unix.Native;
-#else
-using System.Reflection;
-#endif
 using Windows.Win32;
 using Windows.Win32.System.Memory;
 
@@ -234,30 +230,9 @@ internal static class OpCode
 
         if (Software.OperatingSystem.IsUnix)
         {
-#if NETFRAMEWORK
-            Assembly assembly = Assembly.Load("Mono.Posix, Version=2.0.0.0, Culture=neutral, " + "PublicKeyToken=0738eb9f132ed756");
-
-            Type sysCall = assembly.GetType("Mono.Unix.Native.Syscall");
-            MethodInfo mmap = sysCall.GetMethod("mmap");
-
-            Type mmapProts = assembly.GetType("Mono.Unix.Native.MmapProts");
-            object mmapProtsParam = Enum.ToObject(mmapProts,
-                                                  (int)mmapProts.GetField("PROT_READ").GetValue(null) |
-                                                  (int)mmapProts.GetField("PROT_WRITE").GetValue(null) |
-                                                  (int)mmapProts.GetField("PROT_EXEC").GetValue(null));
-
-            Type mmapFlags = assembly.GetType("Mono.Unix.Native.MmapFlags");
-            object mmapFlagsParam = Enum.ToObject(mmapFlags,
-                                                  (int)mmapFlags.GetField("MAP_ANONYMOUS").GetValue(null) |
-                                                  (int)mmapFlags.GetField("MAP_PRIVATE").GetValue(null));
-
-            if (mmap != null)
-                _codeBuffer = (IntPtr)mmap.Invoke(null, [IntPtr.Zero, _size, mmapProtsParam, mmapFlagsParam, -1, 0]);
-#else
             _codeBuffer = Syscall.mmap(IntPtr.Zero, _size,
                 MmapProts.PROT_READ | MmapProts.PROT_WRITE | MmapProts.PROT_EXEC,
                 MmapFlags.MAP_ANONYMOUS | MmapFlags.MAP_PRIVATE, -1, 0);
-#endif
         }
         else
         {
@@ -281,15 +256,7 @@ internal static class OpCode
 
         if (Software.OperatingSystem.IsUnix)
         {
-#if NETFRAMEWORK
-            Assembly assembly = Assembly.Load("Mono.Posix, Version=2.0.0.0, Culture=neutral, " + "PublicKeyToken=0738eb9f132ed756");
-
-            Type sysCall = assembly.GetType("Mono.Unix.Native.Syscall");
-            MethodInfo method = sysCall.GetMethod("munmap");
-            method?.Invoke(null, [_codeBuffer, _size]);
-#else
             Syscall.munmap(_codeBuffer, _size);
-#endif
         }
         else
         {

@@ -8,7 +8,7 @@
     <AssemblyName>LibreHardwareMonitor.Windows.WinUI</AssemblyName>
     <AssemblyTitle>Libre Hardware Monitor</AssemblyTitle>
     <RootNamespace>LibreHardwareMonitor.Windows.WinUI</RootNamespace>
-    <ApplicationIcon>..\LibreHardwareMonitor.Windows.Forms\Resources\icon.ico</ApplicationIcon>
+    <ApplicationIcon>Resources\icon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <UseWinUI>true</UseWinUI>
     <WindowsPackageType>None</WindowsPackageType>
@@ -34,9 +34,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="..\LibreHardwareMonitor.Windows.Forms\Resources\icon.ico" Link="Resources\icon.ico" CopyToOutputDirectory="PreserveNewest" />
-    <EmbeddedResource Include="..\LibreHardwareMonitor.Windows.Forms\Resources\PawnIO_setup.exe" Link="Resources\PawnIO_setup.exe" />
-    <EmbeddedResource Include="..\LibreHardwareMonitor.Windows.Forms\Resources\*.png" LinkBase="Resources" />
-    <EmbeddedResource Include="..\LibreHardwareMonitor.Windows.Forms\Resources\Web\**" LinkBase="Resources\Web" />
+    <Content Include="Resources\icon.ico" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Resources\PawnIO_setup.exe" />
+    <EmbeddedResource Include="Resources\*.png" />
+    <EmbeddedResource Include="Resources\Web\**" />
   </ItemGroup>
 </Project>

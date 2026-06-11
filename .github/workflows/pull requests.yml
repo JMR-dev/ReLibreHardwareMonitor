@@ -34,24 +34,17 @@ jobs:
           } | Set-Content Directory.Build.props
 
       - name: Restore application packages
-        run: dotnet restore LibreHardwareMonitor.Windows.Forms\LibreHardwareMonitor.Windows.Forms.csproj 
+        run: dotnet restore LibreHardwareMonitor.Windows.WinUI\LibreHardwareMonitor.Windows.WinUI.csproj 
 
       - name: Build application
-        run: dotnet build LibreHardwareMonitor.Windows.Forms\LibreHardwareMonitor.Windows.Forms.csproj -c Release --no-restore -p:Platform=x64
+        run: dotnet build LibreHardwareMonitor.Windows.WinUI\LibreHardwareMonitor.Windows.WinUI.csproj -c Release --no-restore -p:Platform=x64
 
-      - name: Publish net472 application
+      - name: Publish WinUI application
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # 7.0.1
         with:
-          name: LibreHardwareMonitor.Windows.Forms
+          name: LibreHardwareMonitor.Windows.WinUI
           path: |
-            bin/Release/net472
-
-      - name: Publish net10.0 application
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # 7.0.1
-        with:
-          name: LibreHardwareMonitor.Windows.Forms (.NET 10)
-          path: |
-            bin/Release/net10.0-windows
+            bin/Release/net10.0-windows10.0.19041.0
 
       - name: Restore library packages
         run: dotnet restore LibreHardwareMonitorLib\LibreHardwareMonitorLib.csproj 
