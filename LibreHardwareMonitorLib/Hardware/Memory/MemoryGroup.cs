@@ -7,6 +7,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,38 +16,63 @@ using RAMSPDToolkit.SPD;
 using RAMSPDToolkit.SPD.Enums;
 using RAMSPDToolkit.SPD.Interop.Shared;
 using RAMSPDToolkit.Windows.Driver;
+using static LibreHardwareMonitor.Hardware.HardwareStartupTrace;
 
 namespace LibreHardwareMonitor.Hardware.Memory;
 
-internal class MemoryGroup : IGroup, IHardwareChanged
+internal class MemoryGroup : IGroup, IHardwareChanged, IHardwareDiscoveryTask
 {
+    private const string DeferDimmDetectionEnvironmentVariable = "LHM_MEMORY_DEFER_DIMM_DETECTION";
+    private static readonly TimeSpan _retryInterval = TimeSpan.FromSeconds(2.5);
     private static readonly object _lock = new();
     private List<Hardware> _hardware = [];
 
     private CancellationTokenSource _cancellationTokenSource;
+    private Task _hardwareDiscoveryTask = Task.CompletedTask;
     private Exception _lastException;
     private bool _disposed = false;
+    private readonly ISettings _settings;
+    private bool _hasPendingDimmDetection;
+    private TimeSpan _pendingDimmDetectionDelay;
 
     public MemoryGroup(ISettings settings)
+        : this(settings, null)
+    { }
+
+    internal MemoryGroup(ISettings settings, HardwareStartupTrace startupTrace)
     {
-        if (DriverManager.Driver is null || !DriverManager.Driver.IsOpen)
+        _settings = settings;
+
+        Measure(startupTrace, "MemoryGroup.Driver.Configure", () =>
         {
-            // Assign implementation of IDriver.
-            DriverManager.Driver = new RAMSPDToolkitDriver();
-            SMBusManager.UseWMI = false;
-        }
+            if (DriverManager.Driver is null || !DriverManager.Driver.IsOpen)
+            {
+                // Assign implementation of IDriver.
+                DriverManager.Driver = new RAMSPDToolkitDriver();
+                SMBusManager.UseWMI = false;
+            }
+        });
 
-        _hardware.Add(new VirtualMemory(settings));
-        _hardware.Add(new TotalMemory(settings));
+        _hardware.Add(Measure(startupTrace, "MemoryGroup.VirtualMemory", () => new VirtualMemory(settings)));
+        _hardware.Add(Measure(startupTrace, "MemoryGroup.TotalMemory", () => new TotalMemory(settings)));
 
-        if (DriverManager.Driver == null || !DriverManager.LoadDriver())
+        if (!Measure(startupTrace, "MemoryGroup.Driver.LoadDriver", () => DriverManager.Driver != null && DriverManager.LoadDriver(), loaded => loaded ? "Loaded" : "Unavailable"))
         {
             return;
         }
 
-        if (!TryAddDimms(settings))
+        if (ShouldDeferDimmDetection(settings))
         {
-            StartRetryTask(settings);
+            // Defer the start to StartHardwareDiscovery so Computer subscribes before any DIMM is announced.
+            startupTrace?.Skip("MemoryGroup.DimmDetection", "Deferred to background.");
+            _pendingDimmDetectionDelay = TimeSpan.Zero;
+            _hasPendingDimmDetection = true;
+        }
+        else if (!TryAddDimms(settings, startupTrace))
+        {
+            // Synchronous detection found nothing yet; retry in the background, also started from StartHardwareDiscovery.
+            _pendingDimmDetectionDelay = _retryInterval;
+            _hasPendingDimmDetection = true;
         }
     }
 
@@ -56,6 +82,17 @@ internal class MemoryGroup : IGroup, IHardwareChanged
 #pragma warning restore 67
 
     public IReadOnlyList<IHardware> Hardware => _hardware;
+
+    public Task HardwareDiscoveryTask => _hardwareDiscoveryTask;
+
+    public void StartHardwareDiscovery()
+    {
+        if (!_hasPendingDimmDetection)
+            return;
+
+        _hasPendingDimmDetection = false;
+        StartDimmDetectionTask(_settings, _pendingDimmDetectionDelay);
+    }
 
     public string GetReport()
     {
@@ -97,6 +134,11 @@ internal class MemoryGroup : IGroup, IHardwareChanged
 
     private bool TryAddDimms(ISettings settings)
     {
+        return TryAddDimms(settings, null);
+    }
+
+    private bool TryAddDimms(ISettings settings, HardwareStartupTrace startupTrace)
+    {
         try
         {
             lock (_lock)
@@ -106,9 +148,14 @@ internal class MemoryGroup : IGroup, IHardwareChanged
                     return false;
                 }
 
-                if (DetectThermalSensors(out List<SPDAccessor> accessors))
+                List<SPDAccessor> accessors = [];
+                bool detected = Measure(startupTrace,
+                                        "MemoryGroup.DetectThermalSensors",
+                                        () => DetectThermalSensors(out accessors, startupTrace),
+                                        result => result ? $"{accessors.Count} DIMM accessor(s)" : "No DIMM accessors");
+                if (detected)
                 {
-                    AddDimms(accessors, settings);
+                    Measure(startupTrace, "MemoryGroup.AddDimms", () => AddDimms(accessors, settings, startupTrace));
                     return true;
                 }
             }
@@ -122,42 +169,63 @@ internal class MemoryGroup : IGroup, IHardwareChanged
         return false;
     }
 
-    private void StartRetryTask(ISettings settings)
+    private void StartDimmDetectionTask(ISettings settings, TimeSpan initialDelay)
     {
         _cancellationTokenSource = new CancellationTokenSource();
+        CancellationToken cancellationToken = _cancellationTokenSource.Token;
 
-        Task.Run(async () =>
+        _hardwareDiscoveryTask = Task.Run(async () =>
         {
-            int retryRemaining = 5;
-
-            while (!_cancellationTokenSource.IsCancellationRequested && --retryRemaining > 0)
+            try
             {
-                await Task.Delay(TimeSpan.FromSeconds(2.5), _cancellationTokenSource.Token).ConfigureAwait(false);
+                int retryRemaining = 5;
+                TimeSpan delay = initialDelay;
 
-                if (TryAddDimms(settings))
+                while (!cancellationToken.IsCancellationRequested && retryRemaining-- > 0)
                 {
-                    break;
+                    if (delay > TimeSpan.Zero)
+                        await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+
+                    if (TryAddDimms(settings))
+                        break;
+
+                    delay = _retryInterval;
                 }
             }
-        }, _cancellationTokenSource.Token);
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+        }, cancellationToken);
     }
 
     private static bool DetectThermalSensors(out List<SPDAccessor> accessors)
+    {
+        return DetectThermalSensors(out accessors, null);
+    }
+
+    private static bool DetectThermalSensors(out List<SPDAccessor> accessors, HardwareStartupTrace startupTrace)
     {
         accessors = [];
 
         bool ramDetected = false;
 
-        SMBusManager.DetectSMBuses();
+        Measure(startupTrace, "MemoryGroup.SMBus.DetectSMBuses", SMBusManager.DetectSMBuses);
 
         //Go through detected SMBuses
+        int busIndex = 0;
         foreach (SMBusInterface smbus in SMBusManager.RegisteredSMBuses)
         {
+            string busName = $"{smbus.GetType().Name}[{busIndex}]";
+
             //Go through possible RAM slots
             for (byte i = SPDConstants.SPD_BEGIN; i <= SPDConstants.SPD_END; ++i)
             {
                 //Detect type of RAM, if available
-                SPDDetector detector = new(smbus, i);
+                string address = "0x" + i.ToString("X2", CultureInfo.InvariantCulture);
+                SPDDetector detector = Measure(startupTrace,
+                                               $"MemoryGroup.SPDDetector.{busName}.{address}",
+                                               () => new SPDDetector(smbus, i),
+                                               result => result.Accessor != null ? $"Detected {result.Accessor.GetType().Name} index {result.Accessor.Index}" : "No RAM");
 
                 //RAM available and detected
                 if (detector.Accessor != null)
@@ -168,12 +236,19 @@ internal class MemoryGroup : IGroup, IHardwareChanged
                     ramDetected = true;
                 }
             }
+
+            busIndex++;
         }
 
         return ramDetected;
     }
 
-    private void AddDimms(List<SPDAccessor> accessors, ISettings settings)
+    private static bool ShouldDeferDimmDetection(ISettings settings)
+    {
+        return SettingsParsing.ShouldDefer(settings, HardwareSettingsKeys.MemoryDeferDimmDetection, DeferDimmDetectionEnvironmentVariable);
+    }
+
+    private void AddDimms(List<SPDAccessor> accessors, ISettings settings, HardwareStartupTrace startupTrace)
     {
         List<Hardware> additions = [];
 
@@ -181,12 +256,16 @@ internal class MemoryGroup : IGroup, IHardwareChanged
         {
             //Default value
             string name = $"DIMM #{ram.Index}";
+            string phasePrefix = $"MemoryGroup.DIMM{ram.Index}";
 
             //Check if we can switch to the correct page
-            if (ram.ChangePage(PageData.ModulePartNumber))
-                name = $"{ram.GetModuleManufacturerString()} - {ram.ModulePartNumber()} (#{ram.Index})";
+            if (Measure(startupTrace, $"{phasePrefix}.ChangePage", () => ram.ChangePage(PageData.ModulePartNumber), changed => changed ? "Module part number page selected" : "Module part number page unavailable"))
+                name = Measure(startupTrace, $"{phasePrefix}.ReadName", () => $"{ram.GetModuleManufacturerString()} - {ram.ModulePartNumber()} (#{ram.Index})", result => result);
 
-            DimmMemory memory = new(ram, name, new Identifier("memory", "dimm", $"{ram.Index}"), settings);
+            DimmMemory memory = Measure(startupTrace,
+                                        $"{phasePrefix}.CreateHardware",
+                                        () => new DimmMemory(ram, name, new Identifier("memory", "dimm", $"{ram.Index}"), settings),
+                                        memory => $"{memory.Sensors.Length} sensor(s)");
             additions.Add(memory);
         }
 

@@ -65,78 +65,87 @@ internal static class D3DDisplayDevice
         if (status != NTSTATUS.STATUS_SUCCESS)
             return false;
 
-        GetAdapterType(out status, adapter, out D3DKMT_ADAPTERTYPE adapterType);
-        if (status != NTSTATUS.STATUS_SUCCESS)
-            return false;
-
-        if (adapterType.Anonymous.Anonymous.SoftwareDevice)
-            return false;
-
-        deviceInfo.Integrated = adapterType.Anonymous.Anonymous.HybridIntegrated;
-
-        GetQueryStatisticsAdapterInformation(out status, adapter, out D3DKMT_QUERYSTATISTICS_ADAPTER_INFORMATION adapterInformation);
-        if (status != NTSTATUS.STATUS_SUCCESS)
-            return false;
-
-        uint segmentCount = adapterInformation.NbSegments;
-        uint nodeCount = adapterInformation.NodeCount;
-
-        deviceInfo.Nodes = new D3DDeviceNodeInfo[nodeCount];
-
-        DateTime queryTime = DateTime.Now;
-
-        for (uint nodeId = 0; nodeId < nodeCount; nodeId++)
+        // Once the adapter is open it must be closed on every exit path. The guard clauses below bail out on the first
+        // failed D3DKMT query, and this method runs on every GPU's Update() tick, so a missing close leaks a kernel
+        // adapter handle (and its driver-side allocations) once per tick — unbounded over time. Close it in finally.
+        try
         {
-            GetNodeMetaData(out status, adapter, nodeId, out D3DKMT_NODEMETADATA nodeMetaData);
+            GetAdapterType(out status, adapter, out D3DKMT_ADAPTERTYPE adapterType);
             if (status != NTSTATUS.STATUS_SUCCESS)
                 return false;
 
-            GetQueryStatisticsNode(out status, adapter, nodeId, out D3DKMT_QUERYSTATISTICS_NODE_INFORMATION nodeInformation);
+            if (adapterType.Anonymous.Anonymous.SoftwareDevice)
+                return false;
+
+            deviceInfo.Integrated = adapterType.Anonymous.Anonymous.HybridIntegrated;
+
+            GetQueryStatisticsAdapterInformation(out status, adapter, out D3DKMT_QUERYSTATISTICS_ADAPTER_INFORMATION adapterInformation);
             if (status != NTSTATUS.STATUS_SUCCESS)
                 return false;
 
-            deviceInfo.Nodes[nodeId] = new D3DDeviceNodeInfo
+            uint segmentCount = adapterInformation.NbSegments;
+            uint nodeCount = adapterInformation.NodeCount;
+
+            deviceInfo.Nodes = new D3DDeviceNodeInfo[nodeCount];
+
+            DateTime queryTime = DateTime.Now;
+
+            for (uint nodeId = 0; nodeId < nodeCount; nodeId++)
             {
-                Id = nodeId, 
-                Name = GetNodeEngineTypeString(nodeMetaData),
-                RunningTime = nodeInformation.GlobalInformation.RunningTime, 
-                QueryTime = queryTime
-            };
+                GetNodeMetaData(out status, adapter, nodeId, out D3DKMT_NODEMETADATA nodeMetaData);
+                if (status != NTSTATUS.STATUS_SUCCESS)
+                    return false;
+
+                GetQueryStatisticsNode(out status, adapter, nodeId, out D3DKMT_QUERYSTATISTICS_NODE_INFORMATION nodeInformation);
+                if (status != NTSTATUS.STATUS_SUCCESS)
+                    return false;
+
+                deviceInfo.Nodes[nodeId] = new D3DDeviceNodeInfo
+                {
+                    Id = nodeId,
+                    Name = GetNodeEngineTypeString(nodeMetaData),
+                    RunningTime = nodeInformation.GlobalInformation.RunningTime,
+                    QueryTime = queryTime
+                };
+            }
+
+            GetSegmentSize(out status, adapter, out D3DKMT_SEGMENTSIZEINFO segmentSizeInfo);
+            if (status != NTSTATUS.STATUS_SUCCESS)
+                return false;
+
+            deviceInfo.GpuSharedLimit = segmentSizeInfo.SharedSystemMemorySize;
+            deviceInfo.GpuVideoMemoryLimit = segmentSizeInfo.DedicatedVideoMemorySize;
+            deviceInfo.GpuDedicatedLimit = segmentSizeInfo.DedicatedSystemMemorySize;
+
+            for (uint segmentId = 0; segmentId < segmentCount; segmentId++)
+            {
+                GetQueryStatisticsSegment(out status, adapter, segmentId, out D3DKMT_QUERYSTATISTICS_SEGMENT_INFORMATION segmentInformation);
+                if (status != NTSTATUS.STATUS_SUCCESS)
+                    return false;
+
+                ulong bytesResident = segmentInformation.BytesResident;
+                ulong bytesCommitted = segmentInformation.BytesCommitted;
+
+                uint aperture = segmentInformation.Aperture;
+
+                if (aperture == 1)
+                {
+                    deviceInfo.GpuSharedUsed += bytesResident;
+                    deviceInfo.GpuSharedMax += bytesCommitted;
+                }
+                else
+                {
+                    deviceInfo.GpuDedicatedUsed += bytesResident;
+                    deviceInfo.GpuDedicatedMax += bytesCommitted;
+                }
+            }
+
+            return true;
         }
-
-        GetSegmentSize(out status, adapter, out D3DKMT_SEGMENTSIZEINFO segmentSizeInfo);
-        if (status != NTSTATUS.STATUS_SUCCESS)
-            return false;
-
-        deviceInfo.GpuSharedLimit = segmentSizeInfo.SharedSystemMemorySize;
-        deviceInfo.GpuVideoMemoryLimit = segmentSizeInfo.DedicatedVideoMemorySize;
-        deviceInfo.GpuDedicatedLimit = segmentSizeInfo.DedicatedSystemMemorySize;
-
-        for (uint segmentId = 0; segmentId < segmentCount; segmentId++)
+        finally
         {
-            GetQueryStatisticsSegment(out status, adapter, segmentId, out D3DKMT_QUERYSTATISTICS_SEGMENT_INFORMATION segmentInformation);
-            if (status != NTSTATUS.STATUS_SUCCESS)
-                return false;
-
-            ulong bytesResident = segmentInformation.BytesResident;
-            ulong bytesCommitted = segmentInformation.BytesCommitted;
-
-            uint aperture = segmentInformation.Aperture;
-
-            if (aperture == 1)
-            {
-                deviceInfo.GpuSharedUsed += bytesResident;
-                deviceInfo.GpuSharedMax += bytesCommitted;
-            }
-            else
-            {
-                deviceInfo.GpuDedicatedUsed += bytesResident;
-                deviceInfo.GpuDedicatedMax += bytesCommitted;
-            }
+            CloseAdapter(out _, adapter);
         }
-
-        CloseAdapter(out status, adapter);
-        return status == NTSTATUS.STATUS_SUCCESS;
     }
 
     private static string GetNodeEngineTypeString(D3DKMT_NODEMETADATA nodeMetaData)

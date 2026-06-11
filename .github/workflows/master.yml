@@ -1,17 +1,16 @@
-name: master
+name: release
 
 on:
-  push:
-    branches: [master]
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: windows-2022
+    runs-on: windows-2025
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # 6.0.2
-      - uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # 5.2.0
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5.3.0
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: "10.x"
       - uses: nuget/setup-nuget@fd55a6f3b34392fa83fde1454582407d8c714123 # 4.0.0
       - uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # 3.0.0
         with:
@@ -27,37 +26,36 @@ jobs:
       - name: Update version
         if: steps.changes.outputs.buildprops == 'false'
         run: |
-          (Get-Content Directory.Build.props) | % { 
+          (Get-Content Directory.Build.props) | % {
               $m = [regex]::match($_, '<Version>(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?</Version>');
               if(!$m.Success -or $m.Groups[4].Success -or $m.Groups[5].Success) { $_; }
               else { $_ -replace $m.Value, ("<Version>{0}.{1}.{2}-pre${{ github.run_number }}</Version>" -f $m.Groups[1].Value,$m.Groups[2].Value,([convert]::ToInt32($m.Groups[3].Value)+1)); }
           } | Set-Content Directory.Build.props
 
       - name: Restore application packages
-        run: dotnet restore LibreHardwareMonitor.Windows.Forms\LibreHardwareMonitor.Windows.Forms.csproj 
+        run: dotnet restore LibreHardwareMonitor.Windows.WinUI\LibreHardwareMonitor.Windows.WinUI.csproj
 
       - name: Build application
-        run: dotnet build LibreHardwareMonitor.Windows.Forms\LibreHardwareMonitor.Windows.Forms.csproj -c Release --no-restore -p:Platform=x64
+        run: dotnet build LibreHardwareMonitor.Windows.WinUI\LibreHardwareMonitor.Windows.WinUI.csproj -c Release --no-restore -p:Platform=x64
 
-      - name: Publish net472 application
+      - name: Publish WinUI application
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # 7.0.1
         with:
-          name: LibreHardwareMonitor.Windows.Forms
+          name: LibreHardwareMonitor.Windows.WinUI
           path: |
-            bin/Release/net472
-
-      - name: Publish net10.0 application
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # 7.0.1
-        with:
-          name: LibreHardwareMonitor.Windows.Forms (.NET 10)
-          path: |
-            bin/Release/net10.0-windows
+            bin/Release/net10.0-windows10.0.19041.0
 
       - name: Restore library packages
-        run: dotnet restore LibreHardwareMonitorLib\LibreHardwareMonitorLib.csproj 
+        run: dotnet restore LibreHardwareMonitorLib\LibreHardwareMonitorLib.csproj
 
       - name: Build x64 libraries
         run: dotnet build LibreHardwareMonitorLib\LibreHardwareMonitorLib.csproj -c Release --no-restore -p:Platform=x64
+
+      - name: Run library tests
+        run: dotnet test LibreHardwareMonitorLib.Tests\LibreHardwareMonitorLib.Tests.csproj -c Release -p:Platform=x64
+
+      - name: Run WinUI tests
+        run: dotnet test LibreHardwareMonitor.Windows.WinUI.Tests\LibreHardwareMonitor.Windows.WinUI.Tests.csproj -c Release -p:Platform=x64
 
       - name: Publish x64 libraries
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # 7.0.1
@@ -65,26 +63,6 @@ jobs:
           name: LibreHardwareMonitorLib (x64)
           path: |
             bin/Release/x64
-
-      - name: Build x86 libraries
-        run: dotnet build LibreHardwareMonitorLib\LibreHardwareMonitorLib.csproj -c Release --no-restore -p:Platform=x86
-
-      - name: Publish x86 libraries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # 7.0.1
-        with:
-          name: LibreHardwareMonitorLib (x86)
-          path: |
-            bin/Release/x86
-
-      - name: Build ARM64 libraries
-        run: dotnet build LibreHardwareMonitorLib\LibreHardwareMonitorLib.csproj -c Release --no-restore -p:Platform=ARM64
-
-      - name: Publish ARM64 libraries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # 7.0.1
-        with:
-          name: LibreHardwareMonitorLib (ARM64)
-          path: |
-            bin/Release/ARM64
 
       - name: Build reference libraries
         run: dotnet build LibreHardwareMonitorLib\LibreHardwareMonitorLib.csproj -c Release --no-restore -p:BuildOnlyRefs=true

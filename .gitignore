@@ -6,3 +6,10 @@
 .vs/
 .vscode/
 packages/
+.antigravity
+.antigravitycli/
+.claude
+# Hardware startup timing logs (runtime artifacts)
+docs/LibreHardwareMonitor.HardwareStartupTiming-*.log
+# Local debug launch profile (per-developer env vars, not committed)
+LibreHardwareMonitor.Windows.WinUI/Properties/launchSettings.json

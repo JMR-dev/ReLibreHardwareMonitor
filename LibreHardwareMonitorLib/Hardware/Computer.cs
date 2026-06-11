@@ -1,4 +1,4 @@
-﻿// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
 // Copyright (C) LibreHardwareMonitor and Contributors.
 // Partial Copyright (C) Michael Möller <mmoeller@openhardwaremonitor.org> and Contributors.
@@ -9,6 +9,8 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware.Battery;
 using LibreHardwareMonitor.Hardware.Controller.AeroCool;
 using LibreHardwareMonitor.Hardware.Controller.AquaComputer;
@@ -27,6 +29,7 @@ using LibreHardwareMonitor.Hardware.PowerMonitor;
 using LibreHardwareMonitor.Hardware.Psu.Corsair;
 using LibreHardwareMonitor.Hardware.Psu.Msi;
 using LibreHardwareMonitor.Hardware.Storage;
+using static LibreHardwareMonitor.Hardware.HardwareStartupTrace;
 
 namespace LibreHardwareMonitor.Hardware;
 
@@ -35,6 +38,14 @@ namespace LibreHardwareMonitor.Hardware;
 /// </summary>
 public class Computer : IComputer
 {
+    private const string DeferNetworkDetectionEnvironmentVariable = "LHM_NETWORK_DEFER_DETECTION";
+    private const string DeferNvidiaDetectionEnvironmentVariable = "LHM_NVIDIA_DEFER_DETECTION";
+    private const string DeferStorageDetectionEnvironmentVariable = "LHM_STORAGE_DEFER_DETECTION";
+    private const string DeferIntelGpuDetectionEnvironmentVariable = "LHM_INTEL_GPU_DEFER_DETECTION";
+    private const string DeferControllerDetectionEnvironmentVariable = "LHM_CONTROLLER_DEFER_DETECTION";
+    private const string DeferPsuDetectionEnvironmentVariable = "LHM_PSU_DEFER_DETECTION";
+
+    private readonly object _deferredGroupLock = new();
     private readonly List<IGroup> _groups = new();
     private readonly object _lock = new();
     private readonly ISettings _settings;
@@ -51,6 +62,14 @@ public class Computer : IComputer
     private bool _psuEnabled;
     private SMBios _smbios;
     private bool _storageEnabled;
+    private CancellationTokenSource _deferredGroupCancellationTokenSource;
+    private TaskCompletionSource<object> _deferredGroupCompletionSource = CreateCompletedTaskCompletionSource();
+    private List<Task> _deferredGroupTasks = [];
+
+    // Serializes the Open/OpenAsync/Close/Reset lifecycle so an asynchronous open cannot interleave with teardown
+    // (which would let a background hardware probe outlive OpCode.Close()/Mutexes.Close()) and so two concurrent
+    // opens cannot double-initialize. Also serializes every access to _deferredGroupCancellationTokenSource.
+    private readonly object _openLock = new();
 
     /// <summary>
     /// Creates a new <see cref="IComputer" /> instance with basic initial <see cref="Settings" />.
@@ -74,6 +93,15 @@ public class Computer : IComputer
 
     /// <inheritdoc />
     public event HardwareEventHandler HardwareRemoved;
+
+    public Task HardwareDiscoveryTask
+    {
+        get
+        {
+            lock (_deferredGroupLock)
+                return _deferredGroupCompletionSource.Task;
+        }
+    }
 
     /// <inheritdoc />
     public IList<IHardware> Hardware
@@ -435,28 +463,67 @@ public class Computer : IComputer
 
     private void Add(IGroup group)
     {
-        if (group == null)
-            return;
+        AddCore(group, CancellationToken.None, null);
+    }
 
+    /// <summary>
+    /// Inserts <paramref name="group" /> while holding <see cref="_lock" />. The deferred discovery paths pass the run's
+    /// <paramref name="cancellationToken" /> and <paramref name="isEnabled" /> so the final eligibility check and the
+    /// membership mutation are atomic with respect to <see cref="Close" />'s drain: a background task can therefore never
+    /// add (and leak) a group after the computer has already been torn down. Returns whether the group was added.
+    /// </summary>
+    private bool AddCore(IGroup group, CancellationToken cancellationToken, Func<bool> isEnabled)
+    {
+        if (group == null)
+            return false;
+
+        bool added = false;
+        IHardware[] initialHardware = null;
         lock (_lock)
         {
-            if (_groups.Contains(group))
-                return;
-
-            _groups.Add(group);
-
-            if (group is IHardwareChanged hardwareChanged)
+            if (!cancellationToken.IsCancellationRequested && (isEnabled == null || isEnabled()) && !_groups.Contains(group))
             {
-                hardwareChanged.HardwareAdded += HardwareAddedEvent;
-                hardwareChanged.HardwareRemoved += HardwareRemovedEvent;
+                _groups.Add(group);
+
+                if (group is IHardwareChanged hardwareChanged)
+                {
+                    hardwareChanged.HardwareAdded += HardwareAddedEvent;
+                    hardwareChanged.HardwareRemoved += HardwareRemovedEvent;
+                }
+
+                // Snapshot the hardware present at subscription time. Capturing it here -- before any background
+                // discovery is started below -- guarantees hardware discovered later is announced exactly once, via the
+                // event we just subscribed: never missed (subscription precedes discovery) and never also replayed from
+                // this snapshot (a duplicate).
+                initialHardware = [.. group.Hardware];
+                added = true;
             }
         }
 
-        if (HardwareAdded != null)
+        if (added)
         {
-            foreach (IHardware hardware in group.Hardware)
-                HardwareAdded(hardware);
+            // Start background discovery only now that the subscription and snapshot are in place, then track its task
+            // so the run's completion (HardwareDiscoveryTask) waits for it.
+            if (group is IHardwareDiscoveryTask discoveryTask)
+            {
+                discoveryTask.StartHardwareDiscovery();
+                TrackGroupHardwareDiscoveryTask(group);
+            }
+
+            if (HardwareAdded != null)
+            {
+                foreach (IHardware hardware in initialHardware)
+                    HardwareAdded(hardware);
+            }
         }
+        else if (isEnabled != null)
+        {
+            // Only the deferred path owns the group's lifetime here; if we declined to add it (run cancelled or the
+            // category was disabled meanwhile), close it so its USB/HID/serial handles are not leaked.
+            group.Close();
+        }
+
+        return added;
     }
 
     private void Remove(IGroup group)
@@ -507,70 +574,409 @@ public class Computer : IComputer
     /// </summary>
     public void Open()
     {
-        if (_open)
-            return;
-
-        _smbios = new SMBios();
-
-        if (Software.OperatingSystem.IsWindows8OrGreater)
-            Mutexes.Open();
-
-        OpCode.Open();
-
-        AddGroups();
-
-        _open = true;
+        OpenInternal(CancellationToken.None);
     }
 
-    private void AddGroups()
+    /// <summary>
+    /// Asynchronously performs the same work as <see cref="Open()" />. The required global setup (SMBIOS, mutexes and
+    /// <see cref="OpCode" />) and hardware group discovery run on a background thread; discovery order and behavior
+    /// match <see cref="Open()" />.
+    /// </summary>
+    /// <returns>A task that completes once all enabled hardware groups have been discovered.</returns>
+    public Task OpenAsync()
     {
+        return OpenAsync(CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Asynchronously performs the same work as <see cref="Open()" />, observing the supplied <paramref name="cancellationToken" />
+    /// between initialization phases.
+    /// </summary>
+    /// <param name="cancellationToken">Token used to cancel initialization before it completes.</param>
+    /// <returns>A task that completes once all enabled hardware groups have been discovered.</returns>
+    public Task OpenAsync(CancellationToken cancellationToken)
+    {
+        lock (_openLock)
+        {
+            if (_open)
+                return Task.CompletedTask;
+        }
+
+        return Task.Run(() => OpenInternal(cancellationToken), cancellationToken);
+    }
+
+    private void OpenInternal(CancellationToken cancellationToken)
+    {
+        // Hold _openLock for the whole open so a concurrent Close()/Reset() cannot run mid-initialization and so a
+        // second Open()/OpenAsync() observes _open atomically instead of double-initializing OpCode/Mutexes/groups.
+        lock (_openLock)
+        {
+            if (_open)
+                return;
+
+            OpenCore(cancellationToken);
+        }
+    }
+
+    private void OpenCore(CancellationToken cancellationToken)
+    {
+        StartDeferredGroupRun();
+
+        try
+        {
+            using HardwareStartupTrace startupTrace = HardwareStartupTrace.Create(_settings);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            _smbios = Measure(startupTrace, "SMBios", () => new SMBios());
+
+            if (!Software.OperatingSystem.IsUnix)
+                Measure(startupTrace, "Mutexes.Open", Mutexes.Open);
+            else
+                startupTrace?.Skip("Mutexes.Open", "Operating system is not Windows.");
+
+            cancellationToken.ThrowIfCancellationRequested();
+            Measure(startupTrace, "OpCode.Open", OpCode.Open);
+
+            AddGroups(startupTrace, cancellationToken);
+            CompleteDeferredGroupRunWhenRegistered();
+
+            _open = true;
+        }
+        catch
+        {
+            CancelDeferredGroupRun();
+            throw;
+        }
+    }
+
+    private void AddGroups(HardwareStartupTrace startupTrace, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         if (_motherboardEnabled)
-            Add(new MotherboardGroup(_smbios, _settings));
+            AddMeasuredGroup(startupTrace, "MotherboardGroup", () => new MotherboardGroup(_smbios, _settings));
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_cpuEnabled)
-            Add(new CpuGroup(_settings));
+            AddMeasuredGroup(startupTrace, "CpuGroup", () => new CpuGroup(_settings, startupTrace));
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_memoryEnabled)
-            Add(new MemoryGroup(_settings));
+            AddMeasuredGroup(startupTrace, "MemoryGroup", () => new MemoryGroup(_settings, startupTrace));
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_gpuEnabled)
         {
-            Add(new AmdGpuGroup(_settings));
-            Add(new NvidiaGroup(_settings));
+            AddMeasuredGroup(startupTrace, "AmdGpuGroup", () => new AmdGpuGroup(_settings));
+            AddMeasuredGroup(startupTrace,
+                             "NvidiaGroup",
+                             () => new NvidiaGroup(_settings),
+                             () => _gpuEnabled,
+                             HardwareSettingsKeys.NvidiaDeferDetection,
+                             DeferNvidiaDetectionEnvironmentVariable);
 
+            // Intel GPU detection is the most expensive GPU probe but only depends on the (already-created) CPU group,
+            // so it can be deferred to the background like the other GPU/storage/network groups.
             if (_cpuEnabled)
-                Add(new IntelGpuGroup(GetIntelCpus(), _settings));
+                AddMeasuredGroup(startupTrace,
+                                 "IntelGpuGroup",
+                                 () => new IntelGpuGroup(GetIntelCpus(), _settings),
+                                 () => _gpuEnabled && _cpuEnabled,
+                                 HardwareSettingsKeys.IntelGpuDeferDetection,
+                                 DeferIntelGpuDetectionEnvironmentVariable);
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_powerMonitorEnabled)
-            Add(new PowerMonitorGroup(_settings));
+            AddMeasuredGroup(startupTrace, "PowerMonitorGroup", () => new PowerMonitorGroup(_settings));
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_controllerEnabled)
         {
-            Add(new TBalancerGroup(_settings));
-            Add(new HeatmasterGroup(_settings));
-            Add(new AquaComputerGroup(_settings));
-            Add(new AeroCoolGroup(_settings));
-            Add(new NzxtGroup(_settings));
-            Add(new RazerGroup(_settings));
-            Add(new ArcticGroup(_settings));
-            Add(new MsiGroup(_settings));
+            // Controllers probe USB/serial buses (with worst-case timeouts), so the whole block can be deferred to a
+            // single background task. It stays sequential there to avoid concurrent serial-port/USB scans.
+            if (ShouldDeferDetection(HardwareSettingsKeys.ControllerDeferDetection, DeferControllerDetectionEnvironmentVariable))
+            {
+                startupTrace?.Skip("ControllerGroups", "Deferred to background.");
+                AddDeferredGroups(() => _controllerEnabled,
+                                  () => new TBalancerGroup(_settings),
+                                  () => new HeatmasterGroup(_settings),
+                                  () => new AquaComputerGroup(_settings),
+                                  () => new AeroCoolGroup(_settings),
+                                  () => new NzxtGroup(_settings),
+                                  () => new RazerGroup(_settings),
+                                  () => new ArcticGroup(_settings),
+                                  () => new MsiGroup(_settings));
+            }
+            else
+            {
+                AddMeasuredGroup(startupTrace, "TBalancerGroup", () => new TBalancerGroup(_settings));
+                AddMeasuredGroup(startupTrace, "HeatmasterGroup", () => new HeatmasterGroup(_settings));
+                AddMeasuredGroup(startupTrace, "AquaComputerGroup", () => new AquaComputerGroup(_settings));
+                AddMeasuredGroup(startupTrace, "AeroCoolGroup", () => new AeroCoolGroup(_settings));
+                AddMeasuredGroup(startupTrace, "NzxtGroup", () => new NzxtGroup(_settings));
+                AddMeasuredGroup(startupTrace, "RazerGroup", () => new RazerGroup(_settings));
+                AddMeasuredGroup(startupTrace, "ArcticGroup", () => new ArcticGroup(_settings));
+                AddMeasuredGroup(startupTrace, "MsiGroup", () => new MsiGroup(_settings));
+            }
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_storageEnabled)
-            Add(new StorageGroup(_settings));
+            AddMeasuredGroup(startupTrace,
+                             "StorageGroup",
+                             () => new StorageGroup(_settings),
+                             () => _storageEnabled,
+                             HardwareSettingsKeys.StorageDeferDetection,
+                             DeferStorageDetectionEnvironmentVariable);
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_networkEnabled)
-            Add(new NetworkGroup(_settings));
+            AddMeasuredGroup(startupTrace,
+                             "NetworkGroup",
+                             () => new NetworkGroup(_settings),
+                             () => _networkEnabled,
+                             HardwareSettingsKeys.NetworkDeferDetection,
+                             DeferNetworkDetectionEnvironmentVariable);
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_psuEnabled)
         {
-            Add(new CorsairPsuGroup(_settings));
-            Add(new MsiPsuGroup(_settings));
+            // PSU detection probes HID devices, so it contends with the deferred controllers' USB/HID scans. Defer it
+            // to a background task too, keeping all HID/USB probing off the critical path.
+            if (ShouldDeferDetection(HardwareSettingsKeys.PsuDeferDetection, DeferPsuDetectionEnvironmentVariable))
+            {
+                startupTrace?.Skip("PsuGroups", "Deferred to background.");
+                AddDeferredGroups(() => _psuEnabled,
+                                  () => new CorsairPsuGroup(_settings),
+                                  () => new MsiPsuGroup(_settings));
+            }
+            else
+            {
+                AddMeasuredGroup(startupTrace, "CorsairPsuGroup", () => new CorsairPsuGroup(_settings));
+                AddMeasuredGroup(startupTrace, "MsiPsuGroup", () => new MsiPsuGroup(_settings));
+            }
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (_batteryEnabled)
-            Add(new BatteryGroup(_settings));
+            AddMeasuredGroup(startupTrace, "BatteryGroup", () => new BatteryGroup(_settings));
+    }
+
+    private void AddMeasuredGroup(HardwareStartupTrace startupTrace, string phase, Func<IGroup> createGroup)
+    {
+        Add(Measure(startupTrace, phase, createGroup));
+    }
+
+    private void AddMeasuredGroup(HardwareStartupTrace startupTrace, string phase, Func<IGroup> createGroup, Func<bool> isEnabled, string deferSettingName, string deferEnvironmentVariable)
+    {
+        if (!ShouldDeferDetection(deferSettingName, deferEnvironmentVariable))
+        {
+            AddMeasuredGroup(startupTrace, phase, createGroup);
+            return;
+        }
+
+        startupTrace?.Skip(phase, "Deferred to background.");
+        AddDeferredGroup(createGroup, isEnabled);
+    }
+
+    private void AddDeferredGroup(Func<IGroup> createGroup, Func<bool> isEnabled)
+    {
+        // StartDeferredGroupRun (run under _openLock before AddGroups) always assigns the token source, so the deferred
+        // path is the only reachable one here.
+        CancellationToken cancellationToken = _deferredGroupCancellationTokenSource.Token;
+        Task task = Task.Run(() =>
+        {
+            IGroup group = null;
+            try
+            {
+                group = createGroup();
+            }
+            catch (Exception ex)
+            {
+                if (!cancellationToken.IsCancellationRequested)
+                    System.Diagnostics.Debug.WriteLine($"Deferred hardware detection failed: {ex}");
+
+                return;
+            }
+
+            if (group == null)
+                return;
+
+            AddCore(group, cancellationToken, isEnabled);
+        });
+        TrackDeferredGroupTask(task);
+    }
+
+    private void AddDeferredGroups(Func<bool> isEnabled, params Func<IGroup>[] createGroups)
+    {
+        CancellationToken cancellationToken = _deferredGroupCancellationTokenSource.Token;
+        Task task = Task.Run(() =>
+        {
+            foreach (Func<IGroup> createGroup in createGroups)
+            {
+                if (cancellationToken.IsCancellationRequested || !isEnabled())
+                    return;
+
+                IGroup group = null;
+                try
+                {
+                    group = createGroup();
+                }
+                catch (Exception ex)
+                {
+                    if (!cancellationToken.IsCancellationRequested)
+                        System.Diagnostics.Debug.WriteLine($"Deferred hardware detection failed: {ex}");
+
+                    continue;
+                }
+
+                if (group == null)
+                    continue;
+
+                // Stop the sequential block if the run was cancelled or the category was disabled while we were probing.
+                if (!AddCore(group, cancellationToken, isEnabled))
+                    return;
+            }
+        });
+        TrackDeferredGroupTask(task);
+    }
+
+    private bool ShouldDeferDetection(string settingName, string environmentVariable)
+    {
+        return SettingsParsing.ShouldDefer(_settings, settingName, environmentVariable);
+    }
+
+    private void StartDeferredGroupRun()
+    {
+        CancelDeferredGroupRun();
+        lock (_deferredGroupLock)
+        {
+            _deferredGroupCompletionSource = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _deferredGroupTasks = [];
+        }
+
+        _deferredGroupCancellationTokenSource = new CancellationTokenSource();
+    }
+
+    private void CancelDeferredGroupRun()
+    {
+        CancellationTokenSource cancellationTokenSource = _deferredGroupCancellationTokenSource;
+        _deferredGroupCancellationTokenSource = null;
+        TaskCompletionSource<object> completionSource;
+        Task[] tasks;
+
+        lock (_deferredGroupLock)
+        {
+            completionSource = _deferredGroupCompletionSource;
+            tasks = _deferredGroupTasks.ToArray();
+            _deferredGroupTasks = [];
+        }
+
+        if (cancellationTokenSource == null)
+        {
+            completionSource.TrySetCanceled();
+            return;
+        }
+
+        cancellationTokenSource.Cancel();
+
+        // Mark the run cancelled before draining so the Task.WhenAll continuation in CompleteDeferredGroupRunWhenRegistered
+        // cannot win the race and complete HardwareDiscoveryTask during teardown.
+        completionSource.TrySetCanceled();
+
+        // Wait for in-flight deferred construction to unwind before disposing the token source or returning to a caller
+        // that is about to tear down native state. A deferred task only checks the token before createGroup() and again
+        // in AddCore, so the group constructor (which probes hardware via OpCode/native APIs) always runs to completion;
+        // draining here keeps it from racing OpCode.Close()/Mutexes.Close() in Close() or a fresh run from Reset()/Open().
+        WaitForDeferredGroupTasks(tasks);
+
+        cancellationTokenSource.Dispose();
+    }
+
+    private static void WaitForDeferredGroupTasks(Task[] tasks)
+    {
+        if (tasks.Length == 0)
+            return;
+
+        try
+        {
+            Task.WaitAll(tasks);
+        }
+        catch (AggregateException)
+        {
+            // Deferred discovery tasks observe and log their own exceptions; nothing actionable surfaces here.
+        }
+    }
+
+    private static TaskCompletionSource<object> CreateCompletedTaskCompletionSource()
+    {
+        TaskCompletionSource<object> completionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        completionSource.SetResult(null);
+        return completionSource;
+    }
+
+    private void CompleteDeferredGroupRun(TaskCompletionSource<object> completionSource)
+    {
+        lock (_deferredGroupLock)
+        {
+            if (!ReferenceEquals(completionSource, _deferredGroupCompletionSource))
+                return;
+
+            completionSource.TrySetResult(null);
+        }
+    }
+
+    private void CompleteDeferredGroupRunWhenRegistered()
+    {
+        TaskCompletionSource<object> completionSource;
+        lock (_deferredGroupLock)
+            completionSource = _deferredGroupCompletionSource;
+
+        WaitForRegisteredTasksThenComplete(completionSource, 0);
+    }
+
+    /// <summary>
+    /// Completes the run once every tracked deferred task has finished. A deferred group that is itself an
+    /// <see cref="IHardwareDiscoveryTask" /> registers its nested task from a background thread, so more tasks can
+    /// appear after the first <c>Task.WhenAll</c>; this re-arms on the larger set (comparing against the count
+    /// already awaited) until no new task has been registered, so completion never fires while discovery is still running.
+    /// </summary>
+    private void WaitForRegisteredTasksThenComplete(TaskCompletionSource<object> completionSource, int alreadyAwaited)
+    {
+        Task[] tasks;
+        lock (_deferredGroupLock)
+        {
+            // A superseding run (Reset()/Close() started a new one) owns completion now; stop.
+            if (!ReferenceEquals(completionSource, _deferredGroupCompletionSource))
+                return;
+
+            tasks = _deferredGroupTasks.ToArray();
+        }
+
+        if (tasks.Length <= alreadyAwaited)
+        {
+            CompleteDeferredGroupRun(completionSource);
+            return;
+        }
+
+        _ = Task.WhenAll(tasks).ContinueWith(_ => WaitForRegisteredTasksThenComplete(completionSource, tasks.Length),
+                                             CancellationToken.None,
+                                             TaskContinuationOptions.ExecuteSynchronously,
+                                             TaskScheduler.Default);
+    }
+
+    private void TrackDeferredGroupTask(Task task)
+    {
+        lock (_deferredGroupLock)
+            _deferredGroupTasks.Add(task);
+    }
+
+    private void TrackGroupHardwareDiscoveryTask(IGroup group)
+    {
+        if (group is not IHardwareDiscoveryTask hardwareDiscoveryTask || hardwareDiscoveryTask.HardwareDiscoveryTask.IsCompleted)
+            return;
+
+        TrackDeferredGroupTask(hardwareDiscoveryTask.HardwareDiscoveryTask);
     }
 
     private static void NewSection(TextWriter writer)
@@ -652,23 +1058,31 @@ public class Computer : IComputer
     /// </summary>
     public void Close()
     {
-        if (!_open)
-            return;
-
-        lock (_lock)
+        lock (_openLock)
         {
-            while (_groups.Count > 0)
+            if (!_open)
+                return;
+
+            // Cancel and DRAIN deferred discovery before tearing down native state: a deferred group constructor runs
+            // to completion even after cancellation, so without waiting here a background probe could run concurrently
+            // with OpCode.Close()/Mutexes.Close() and fault in native code.
+            CancelDeferredGroupRun();
+
+            lock (_lock)
             {
-                IGroup group = _groups[_groups.Count - 1];
-                Remove(group);
+                while (_groups.Count > 0)
+                {
+                    IGroup group = _groups[_groups.Count - 1];
+                    Remove(group);
+                }
             }
+
+            OpCode.Close();
+            Mutexes.Close();
+
+            _smbios = null;
+            _open = false;
         }
-
-        OpCode.Close();
-        Mutexes.Close();
-
-        _smbios = null;
-        _open = false;
     }
 
     /// <summary>
@@ -676,11 +1090,16 @@ public class Computer : IComputer
     /// </summary>
     public void Reset()
     {
-        if (!_open)
-            return;
+        lock (_openLock)
+        {
+            if (!_open)
+                return;
 
-        RemoveGroups();
-        AddGroups();
+            StartDeferredGroupRun();
+            RemoveGroups();
+            AddGroups(null, CancellationToken.None);
+            CompleteDeferredGroupRunWhenRegistered();
+        }
     }
 
     private void RemoveGroups()

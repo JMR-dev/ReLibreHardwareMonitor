@@ -9,11 +9,14 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
 using LibreHardwareMonitor.PawnIo;
+using static LibreHardwareMonitor.Hardware.HardwareStartupTrace;
 
 namespace LibreHardwareMonitor.Hardware.Cpu;
 
 internal sealed class IntelCpu : GenericCpu
 {
+    private const string DeferInitialUpdateEnvironmentVariable = "LHM_CPU_DEFER_INITIAL_UPDATE";
+
     private readonly Sensor _busClock;
     private readonly Sensor _coreAvg;
     private readonly Sensor[] _coreClocks;
@@ -36,12 +39,16 @@ internal sealed class IntelCpu : GenericCpu
 
     private readonly IntelMsr _pawnModule;
 
-    public IntelCpu(int processorIndex, CpuId[][] cpuId, ISettings settings) : base(processorIndex, cpuId, settings)
+    public IntelCpu(int processorIndex, CpuId[][] cpuId, ISettings settings)
+        : this(processorIndex, cpuId, settings, null)
+    { }
+
+    internal IntelCpu(int processorIndex, CpuId[][] cpuId, ISettings settings, HardwareStartupTrace startupTrace) : base(processorIndex, cpuId, settings, startupTrace)
     {
         if (Software.OperatingSystem.IsUnix)
             return;
 
-        _pawnModule = new IntelMsr();
+        _pawnModule = Measure(startupTrace, "IntelCpu.CreateMsrModule", () => new IntelMsr());
 
         uint eax;
 
@@ -527,7 +534,17 @@ internal sealed class IntelCpu : GenericCpu
             ActivateSensor(_coreVIDs[i]);
         }
 
-        Update();
+        if (ShouldDeferInitialUpdate(settings))
+        {
+            if (HasTimeStampCounter && _timeStampCounterMultiplier > 0)
+                ActivateSensor(_busClock);
+
+            startupTrace?.Skip("IntelCpu.InitialUpdate", "Deferred until first regular update.");
+        }
+        else
+        {
+            Measure(startupTrace, "IntelCpu.InitialUpdate", Update);
+        }
     }
 
     public float EnergyUnitsMultiplier { get; }
@@ -553,6 +570,11 @@ internal sealed class IntelCpu : GenericCpu
         }
 
         return result;
+    }
+
+    private static bool ShouldDeferInitialUpdate(ISettings settings)
+    {
+        return SettingsParsing.ShouldDefer(settings, HardwareSettingsKeys.CpuDeferInitialUpdate, DeferInitialUpdateEnvironmentVariable);
     }
 
     public override string GetReport()
@@ -631,7 +653,12 @@ internal sealed class IntelCpu : GenericCpu
             }
         }
 
-        if (HasTimeStampCounter && _timeStampCounterMultiplier > 0)
+        double timeStampCounterFrequency = TimeStampCounterFrequency;
+
+        // When TSC estimation is deferred to the background, TimeStampCounterFrequency is 0 until the estimate lands (or
+        // the base class self-corrects it from real TSC deltas after a couple of updates). Skip the bus/core clock math
+        // until it is known so the clock sensors keep their previous value instead of momentarily reporting 0 MHz.
+        if (HasTimeStampCounter && _timeStampCounterMultiplier > 0 && timeStampCounterFrequency > 0)
         {
             double newBusClock = 0;
             for (int i = 0; i < _coreClocks.Length; i++)
@@ -639,7 +666,7 @@ internal sealed class IntelCpu : GenericCpu
                 System.Threading.Thread.Sleep(1);
                 if (_pawnModule.ReadMsr(IA32_PERF_STATUS, out eax, out _, _cpuId[i][0].Affinity))
                 {
-                    newBusClock = TimeStampCounterFrequency / _timeStampCounterMultiplier;
+                    newBusClock = timeStampCounterFrequency / _timeStampCounterMultiplier;
                     switch (_microArchitecture)
                     {
                         case MicroArchitecture.Nehalem:
@@ -680,7 +707,7 @@ internal sealed class IntelCpu : GenericCpu
                 else
                 {
                     // if IA32_PERF_STATUS is not available, assume TSC frequency
-                    _coreClocks[i].Value = (float)TimeStampCounterFrequency;
+                    _coreClocks[i].Value = (float)timeStampCounterFrequency;
                 }
             }
 

@@ -1,4 +1,4 @@
-﻿// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
 // Copyright (C) Florian K. (Blacktempel)
 // All Rights Reserved.
@@ -74,7 +74,7 @@ public sealed class WireViewPro2 : Hardware, IPowerMonitor
     {
         var devices = new List<WireViewPro2>();
 
-        if (!Software.OperatingSystem.IsWindows8OrGreater)
+        if (Software.OperatingSystem.IsUnix)
         {
             return devices; //No Linux implementation yet
         }

@@ -396,7 +396,11 @@ internal sealed class Amd17Cpu : AmdCpu
             }
 
             double timeStampCounterMultiplier = GetTimeStampCounterMultiplier();
-            if (timeStampCounterMultiplier > 0)
+
+            // When TSC estimation is deferred to the background, TimeStampCounterFrequency is 0 until the estimate
+            // lands (or GenericCpu.Update self-corrects it from real TSC deltas). Skip the bus-clock math until then so
+            // the sensor keeps its previous value instead of momentarily reporting 0 MHz (mirrors IntelCpu).
+            if (timeStampCounterMultiplier > 0 && _cpu.TimeStampCounterFrequency > 0)
             {
                 _busClock.Value = (float)(_cpu.TimeStampCounterFrequency / timeStampCounterMultiplier);
                 _cpu.ActivateSensor(_busClock);
