@@ -458,7 +458,9 @@ public sealed class PlotView : Grid
             StrokeLineJoin = PenLineJoin.Round
         };
 
-        foreach (PlotPointViewModel point in sample.Points)
+        IReadOnlyList<PlotPointViewModel> decimatedPoints = DecimatePoints(sample.Points, (int)Math.Max(100, bounds.Width));
+
+        foreach (PlotPointViewModel point in decimatedPoints)
         {
             double x = bounds.Left + (point.Timestamp - minTimestamp).Ticks / (double)rangeTicks * bounds.Width;
             double y = axis.Bottom - ((point.Value - axis.MinValue) / (axis.MaxValue - axis.MinValue) * axis.Height);
@@ -468,6 +470,57 @@ public sealed class PlotView : Grid
         canvas.Children.Add(line);
         if (line.Points.Count > 0)
             DrawPointMarker(canvas, line.Points[^1], stroke);
+    }
+
+    internal static IReadOnlyList<PlotPointViewModel> DecimatePoints(IReadOnlyList<PlotPointViewModel> points, int targetWidth)
+    {
+        if (points.Count <= targetWidth * 2)
+            return points;
+
+        List<PlotPointViewModel> result = new();
+        int bucketSize = points.Count / targetWidth;
+        if (bucketSize <= 1)
+            return points;
+
+        for (int i = 0; i < targetWidth; i++)
+        {
+            int start = i * bucketSize;
+            int end = (i == targetWidth - 1) ? points.Count : (i + 1) * bucketSize;
+            if (start >= end)
+                break;
+
+            int minIdx = start;
+            int maxIdx = start;
+            for (int j = start + 1; j < end; j++)
+            {
+                if (points[j].Value < points[minIdx].Value)
+                    minIdx = j;
+                if (points[j].Value > points[maxIdx].Value)
+                    maxIdx = j;
+            }
+
+            if (minIdx == maxIdx)
+            {
+                result.Add(points[minIdx]);
+            }
+            else if (minIdx < maxIdx)
+            {
+                result.Add(points[minIdx]);
+                result.Add(points[maxIdx]);
+            }
+            else
+            {
+                result.Add(points[maxIdx]);
+                result.Add(points[minIdx]);
+            }
+        }
+
+        if (result.Count > 0 && result[^1].Timestamp != points[^1].Timestamp)
+        {
+            result.Add(points[^1]);
+        }
+
+        return result;
     }
 
     private void DrawPlotMessage(Canvas canvas, PlotBounds bounds, string message)

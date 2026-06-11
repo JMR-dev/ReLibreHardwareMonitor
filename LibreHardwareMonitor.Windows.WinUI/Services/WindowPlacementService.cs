@@ -66,16 +66,25 @@ internal sealed class WindowPlacementService
 
     public void Maximize()
     {
-        if (_appWindow.Presenter is OverlappedPresenter presenter)
+        if (_settings.GetValue(_settingPrefix + "Maximized", false) && _appWindow.Presenter is OverlappedPresenter presenter)
             presenter.Maximize();
     }
 
     public void Save()
     {
-        _settings.SetValue(_settingPrefix + "Location.X", _appWindow.Position.X);
-        _settings.SetValue(_settingPrefix + "Location.Y", _appWindow.Position.Y);
-        _settings.SetValue(_settingPrefix + "Width", _appWindow.Size.Width);
-        _settings.SetValue(_settingPrefix + "Height", _appWindow.Size.Height);
+        if (_appWindow.Presenter is OverlappedPresenter presenter)
+        {
+            bool maximized = presenter.State == OverlappedPresenterState.Maximized;
+            _settings.SetValue(_settingPrefix + "Maximized", maximized);
+
+            if (presenter.State == OverlappedPresenterState.Restored)
+            {
+                _settings.SetValue(_settingPrefix + "Location.X", _appWindow.Position.X);
+                _settings.SetValue(_settingPrefix + "Location.Y", _appWindow.Position.Y);
+                _settings.SetValue(_settingPrefix + "Width", _appWindow.Size.Width);
+                _settings.SetValue(_settingPrefix + "Height", _appWindow.Size.Height);
+            }
+        }
     }
 
     [DllImport("user32.dll")]
