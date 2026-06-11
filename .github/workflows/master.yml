@@ -51,6 +51,12 @@ jobs:
       - name: Build x64 libraries
         run: dotnet build LibreHardwareMonitorLib\LibreHardwareMonitorLib.csproj -c Release --no-restore -p:Platform=x64
 
+      - name: Run library tests
+        run: dotnet test LibreHardwareMonitorLib.Tests\LibreHardwareMonitorLib.Tests.csproj -c Release -p:Platform=x64
+
+      - name: Run WinUI tests
+        run: dotnet test LibreHardwareMonitor.Windows.WinUI.Tests\LibreHardwareMonitor.Windows.WinUI.Tests.csproj -c Release -p:Platform=x64
+
       - name: Publish x64 libraries
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # 7.0.1
         with:
