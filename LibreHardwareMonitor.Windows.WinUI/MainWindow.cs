@@ -581,8 +581,8 @@ public sealed partial class MainWindow : Window
         plotCheck.Unchecked += (_, _) => QueuePlotSeriesRefresh();
         sensorCell.Children.Add(plotCheck);
 
-        FontIcon icon = new() { FontSize = 14 };
-        Bind(icon, FontIcon.GlyphProperty, item, nameof(SensorTreeItemViewModel.IconGlyph));
+        Image icon = new() { Width = 16, Height = 16 };
+        icon.Source = SensorTypeDisplay.GetImageByFilename(item.IconImageName);
         sensorCell.Children.Add(icon);
 
         TextBlock name = new() { TextTrimming = TextTrimming.CharacterEllipsis };

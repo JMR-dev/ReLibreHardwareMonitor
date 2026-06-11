@@ -8,6 +8,7 @@ using System.Linq;
 using LibreHardwareMonitor.Hardware;
 using LibreHardwareMonitor.Windows.WinUI.Services;
 using LibreHardwareMonitor.Windows.WinUI.ViewModels;
+using LibreHardwareMonitor.Windows.WinUI.Utilities;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -111,8 +112,8 @@ public sealed class SensorGadgetWindow : Window
         };
 
         StackPanel namePanel = new() { Orientation = Orientation.Horizontal, Spacing = 6 };
-        FontIcon icon = new() { FontSize = 12 };
-        Bind(icon, FontIcon.GlyphProperty, item, nameof(SensorTreeItemViewModel.IconGlyph));
+        Image icon = new() { Width = 16, Height = 16 };
+        icon.Source = SensorTypeDisplay.GetImageByFilename(item.IconImageName);
         namePanel.Children.Add(icon);
 
         TextBlock name = new() { TextTrimming = TextTrimming.CharacterEllipsis };

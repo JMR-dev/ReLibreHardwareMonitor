@@ -53,6 +53,8 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
 
     public string IconGlyph { get; private init; } = "\uE950";
 
+    public string? IconImageName { get; private init; }
+
     public bool IsExpanded
     {
         get => _isExpanded;
@@ -210,6 +212,7 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
         {
             _text = text,
             IconGlyph = "\uE7F4",
+            IconImageName = "computer.png",
             _isExpanded = true
         };
     }
@@ -221,6 +224,7 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
         {
             Hardware = hardware,
             IconGlyph = SensorTypeDisplay.GetHardwareGlyph(hardware.HardwareType),
+            IconImageName = SensorTypeDisplay.GetHardwareImageFile(hardware.HardwareType),
             _expandedSettingName = expandedSettingName,
             _isExpanded = settings.GetValue(expandedSettingName, true)
         };
@@ -352,6 +356,7 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
         {
             Sensor = sensor,
             IconGlyph = SensorTypeDisplay.GetGlyph(sensor.SensorType),
+            IconImageName = SensorTypeDisplay.GetImageFile(sensor.SensorType),
             _isVisible = !settings.GetValue(hiddenSettingName, sensor.IsDefaultHidden),
             _plot = settings.GetValue(plotSettingName, false),
             _penColor = settings.Contains(penColorSettingName) ? settings.GetValue(penColorSettingName, Color.FromArgb(255, 0, 0, 0)) : null
@@ -365,6 +370,7 @@ public sealed class SensorTreeItemViewModel : ViewModelBase
         {
             _text = SensorTypeDisplay.GetText(sensorType),
             IconGlyph = SensorTypeDisplay.GetGlyph(sensorType),
+            IconImageName = SensorTypeDisplay.GetImageFile(sensorType),
             _expandedSettingName = expandedSettingName,
             _isExpanded = settings.GetValue(expandedSettingName, true)
         };

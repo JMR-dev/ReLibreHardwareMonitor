@@ -2,5 +2,6 @@
   <PropertyGroup>
     <Version>0.9.6</Version>
     <Copyright>LibreHardwareMonitor</Copyright>
+    <Platform Condition=" '$(Platform)' == '' ">x64</Platform>
   </PropertyGroup>
 </Project>
