@@ -221,6 +221,7 @@ public class SensorFormatterTests
         mockSensor.Setup(s => s.SensorType).Returns(SensorType.Temperature);
 
         var result = SensorFormatter.GetPlotValue(mockSensor.Object, TemperatureUnit.Fahrenheit);
+        Assert.NotNull(result);
         Assert.Equal(77.9, result.Value, 1);
     }
 
@@ -243,6 +244,7 @@ public class SensorFormatterTests
 
         var result = SensorFormatter.GetPlotValue(mockSensor.Object, 25.5f, TemperatureUnit.Fahrenheit);
 
+        Assert.NotNull(result);
         Assert.Equal(77.9, result.Value, 1);
     }
 

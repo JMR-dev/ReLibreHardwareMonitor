@@ -18,7 +18,7 @@ public class AppSettingsTests : IDisposable
         
         // Use reflection to instantiate AppSettings with custom filename
         var ctor = typeof(AppSettings).GetConstructor(BindingFlags.NonPublic | BindingFlags.Instance, null, new[] { typeof(string) }, null);
-        _settings = (AppSettings)ctor.Invoke(new object[] { _tempFile });
+        _settings = (AppSettings)ctor!.Invoke(new object[] { _tempFile });
     }
 
     public void Dispose()
@@ -109,7 +109,7 @@ public class AppSettingsTests : IDisposable
 
         // Create new instance pointing to same file
         var ctor = typeof(AppSettings).GetConstructor(BindingFlags.NonPublic | BindingFlags.Instance, null, new[] { typeof(string) }, null);
-        var loadedSettings = (AppSettings)ctor.Invoke(new object[] { _tempFile });
+        var loadedSettings = (AppSettings)ctor!.Invoke(new object[] { _tempFile });
         
         loadedSettings.Load();
 
