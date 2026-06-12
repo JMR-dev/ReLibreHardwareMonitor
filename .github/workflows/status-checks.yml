@@ -1,4 +1,4 @@
-name: pull requests
+name: status-checks
 
 on:
   pull_request:
@@ -59,22 +59,8 @@ jobs:
       - name: Run WinUI tests
         run: dotnet test LibreHardwareMonitor.Windows.WinUI.Tests\LibreHardwareMonitor.Windows.WinUI.Tests.csproj -c Release -p:Platform=x64
 
-      - name: Publish x64 libraries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # 7.0.1
-        with:
-          name: LibreHardwareMonitorLib (x64)
-          path: |
-            bin/Release/x64
-
       - name: Build reference libraries
         run: dotnet build LibreHardwareMonitorLib\LibreHardwareMonitorLib.csproj -c Release --no-restore -p:BuildOnlyRefs=true
 
       - name: Pack main nupkg
         run: dotnet pack LibreHardwareMonitorLib\LibreHardwareMonitorLib.csproj -c Release -p:PackMainNuget=true --no-build --output bin\Release
-
-      - name: Publish nupkg
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # 7.0.1
-        with:
-          name: LibreHardwareMonitorLib-nupkg
-          path: |
-            bin/Release/LibreHardwareMonitorLib.*.nupkg
