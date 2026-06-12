@@ -11,7 +11,7 @@ public class SimpleViewModelsTests
 {
     private class TestViewModel : ViewModelBase
     {
-        private string _testProperty;
+        private string _testProperty = string.Empty;
         public string TestProperty
         {
             get => _testProperty;
@@ -28,7 +28,7 @@ public class SimpleViewModelsTests
     public void ViewModelBase_SetProperty_ChangesValueAndRaisesEvent()
     {
         var vm = new TestViewModel();
-        string changedProperty = null;
+        string? changedProperty = null;
         vm.PropertyChanged += (sender, args) => changedProperty = args.PropertyName;
 
         // Change value
@@ -57,7 +57,7 @@ public class SimpleViewModelsTests
     public void ViewModelBase_OnPropertyChanged_RaisesEvent()
     {
         var vm = new TestViewModel();
-        string changedProperty = null;
+        string? changedProperty = null;
         vm.PropertyChanged += (sender, args) => changedProperty = args.PropertyName;
 
         vm.TriggerPropertyChanged("CustomProperty");

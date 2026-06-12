@@ -3,11 +3,11 @@ name: release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version/tag to create (e.g. v1.2.3)'
+        description: "Version/tag to create (e.g. v1.2.3)"
         required: false
         type: string
 
@@ -16,16 +16,16 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-2025
+    runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      
+
       - uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5.3.0
         with:
           dotnet-version: "10.x"
-          
+
       - uses: nuget/setup-nuget@fd55a6f3b34392fa83fde1454582407d8c714123 # 4.0.0
-      
+
       - uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # 3.0.0
         with:
           msbuild-architecture: x64
@@ -109,16 +109,16 @@ jobs:
       - name: Stage Release Assets
         run: |
           New-Item -ItemType Directory -Force -Path release-staging
-          
+
           # Copy application binary (single file, self-contained, with .NET version)
           Copy-Item publish/app/LibreHardwareMonitor.Windows.WinUI.exe release-staging/LibreHardwareMonitor.Windows.WinUI-net10.0.exe
-          
+
           # Copy library DLL (net10.0 build)
           Copy-Item bin/Release/x64/net10.0/LibreHardwareMonitorLib.dll release-staging/LibreHardwareMonitorLib.dll
-          
+
           # Create source code ZIP
           git archive --format=zip --output release-staging/LibreHardwareMonitor-source.zip HEAD
-          
+
           # Generate SHA256 checksums
           $sha256 = [System.Security.Cryptography.SHA256]::Create()
           Get-ChildItem release-staging | Where-Object { $_.Name -ne "SHA256SUMS.txt" } | ForEach-Object {
@@ -128,7 +128,7 @@ jobs:
               $hash = [System.BitConverter]::ToString($hashBytes).Replace("-", "").ToLower()
               "{0}  {1}" -f $hash, $_.Name
           } | Set-Content release-staging/SHA256SUMS.txt
-          
+
           # Log hashes for visibility
           Get-Content release-staging/SHA256SUMS.txt
 
